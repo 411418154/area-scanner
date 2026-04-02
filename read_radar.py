@@ -5,11 +5,11 @@ import time
 # ==========================================
 # 1. 請在這裡填寫你的實際設定
 # ==========================================
-CLI_PORT = 'COM6'      # 負責傳送指令的 COM Port (通常是號碼比較小的那個)
+CLI_PORT = 'COM4'      # 負責傳送指令的 COM Port (通常是號碼比較小的那個)
 DATA_PORT = 'COM5'     # 負責接收點雲的 COM Port (通常是號碼比較大的那個)
 CLI_BAUD = 115200      # xWR6843 的預設指令傳輸速率
 DATA_BAUD = 921600     # xWR6843 3D People Tracking 的預設資料傳輸速率 (截圖中若有改為 1250000 請改這裡)
-CFG_FILE = 'C:/ti/radar_toolbox_4_00_00_05/source/ti/examples/Industrial_and_Personal_Electronics/Area_Scanner/chirp_configs/area_scanner_68xx_ISK-0063.cfg'  # 請換成你實際的 .cfg 檔案路徑 (例如: 'C:/ti/3d_people_tracking.cfg')
+CFG_FILE = 'C:/Users/user/Desktop/area scanner/area_scanner_68xx_ISK-0063.cfg'  # 請換成你實際的 .cfg 檔案路徑 (例如: 'C:/ti/3d_people_tracking.cfg')
 #"C:\ti\radar_toolbox_4_00_00_05\source\ti\examples\Industrial_and_Personal_Electronics\Area_Scanner\chirp_configs\area_scanner_68xx_ISK-0063.cfg"
 
 # ==========================================

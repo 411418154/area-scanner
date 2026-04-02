@@ -36,7 +36,7 @@ CLI_PORT = "COM4"
 DATA_PORT = "COM5"
 CLI_BAUD = 115200
 DATA_BAUD = 921600
-CFG_FILE = r"C:\ti\radar_toolbox_3_30_00_06\source\ti\examples\Industrial_and_Personal_Electronics\Area_Scanner\chirp_configs\area_scanner_68xx_ISK.cfg"
+CFG_FILE = 'C:/Users/user/Desktop/area scanner/area_scanner_68xx_ISK-0063.cfg'  # 請換成你實際的 .cfg 檔案路徑 (例如: 'C:/ti/3d_people_tracking.cfg')
 RUN_SECONDS = 12
 
 
