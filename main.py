@@ -54,7 +54,7 @@ try:
 except ModuleNotFoundError as exc:
     print("[錯誤] 目前環境沒有安裝 PySide6。")
     print("請先安裝：")
-    print("    python -m pip install PySide6 pyqtgraph pyserial")
+    print("    pip install PySide6 pyqtgraph PyOpenGL numpy pyserial")
     raise SystemExit(1) from exc
 
 from gui_main import AreaScannerMainWindow
