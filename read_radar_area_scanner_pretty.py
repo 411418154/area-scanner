@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional
 # 1. 使用前請先確認這幾個設定
 # ==========================================================
 # CLI_PORT：拿來送 cfg 指令給雷達的序列埠
-CLI_PORT = 'COM4'
+CLI_PORT = 'COM6'
 
 # DATA_PORT：拿來接收雷達輸出的二進位封包資料的序列埠
 DATA_PORT = 'COM5'
@@ -20,7 +20,7 @@ CLI_BAUD = 115200
 DATA_BAUD = 921600
 
 # CFG_FILE：你的 cfg 檔路徑，要換成你自己電腦上的實際路徑
-CFG_FILE = 'C:/Users/user/Desktop/area scanner/area_scanner_68xx_ISK-0063.cfg'
+CFG_FILE = r"C:\Users\User\Documents\area-scanner\area_scanner_68xx_ISK-0063.cfg"
 
 # Magic Word：TI mmWave 封包開頭同步字
 MAGIC_WORD = b'\x02\x01\x04\x03\x06\x05\x08\x07'
