@@ -1,4 +1,0 @@
-# 忽略 Python 編譯快取檔
-__pycache__/
-*.py[cod]
-*$py.class
