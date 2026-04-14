@@ -221,7 +221,7 @@ def run_gui_mode() -> int:
     if importlib.util.find_spec("PySide6") is None:
         print("[錯誤] 目前環境沒有安裝 PySide6。")
         print("請先安裝：")
-        print("    python -m pip install PySide6 pyqtgraph pyserial")
+        print(" python -m pip install PySide6 pyqtgraph PyOpenGL numpy pyserial")
         return 1
 
     from PySide6.QtWidgets import QApplication
