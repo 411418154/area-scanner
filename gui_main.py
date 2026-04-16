@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Optional
 import time
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -233,8 +233,8 @@ class RadarWorker(QThread):
             try:
                 # 很多 cfg 最後都會 sensorStart，所以停止時盡量送一次 sensorStop。
                 manager.send_cli_command("sensorStop", read_response=False)
-            except Exception:
-                pass
+            except Exception as exc:
+                self.log_signal.emit(f"[Worker 警告] 送出 sensorStop 失敗：{exc}")
 
             try:
                 manager.close_ports()
@@ -706,7 +706,7 @@ class AreaScannerMainWindow(QMainWindow):
         self.worker.log_signal.connect(self.append_log)
         self.worker.frame_signal.connect(self.on_new_frame)
         self.worker.error_signal.connect(self.on_worker_error)
-        self.worker.finished_signal.connect(self.on_worker_finished)
+        self.worker.finished_signal.connect(self.on_worker_finished, Qt.QueuedConnection)
         self.worker.start()
 
         self.btn_start.setEnabled(False)
@@ -721,7 +721,11 @@ class AreaScannerMainWindow(QMainWindow):
 
         if self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait(2000)
+            stopped = self.worker.wait(2000)
+            if not stopped:
+                self.append_log("[系統] 停止 worker 等待逾時（2 秒），進入 fallback 保護模式。")
+                self._enter_worker_timeout_fallback()
+                return
 
         self.worker = None
         self.btn_start.setEnabled(True)
@@ -729,6 +733,23 @@ class AreaScannerMainWindow(QMainWindow):
         self.label_runtime.setText("Stopped")
         self.update_status("已停止")
         self.append_log("[系統] 已停止背景工作。")
+
+    def _enter_worker_timeout_fallback(self) -> None:
+        """worker 停止逾時時的保護流程。"""
+        self.worker = None
+        self.btn_start.setEnabled(False)
+        self.btn_stop.setEnabled(False)
+        self.action_start.setEnabled(False)
+        self.action_stop.setEnabled(False)
+        self.label_runtime.setText("Stop Timeout")
+        self.update_status("停止逾時，請重新連線")
+        self.append_log("[系統] fallback：已停用 Start/Stop 控制，請重新整理 COM Port 並重啟連線。")
+        QMessageBox.warning(
+            self,
+            "Stop Timeout",
+            "停止背景工作逾時，已進入保護模式。\n"
+            "請重新整理 COM Port 並重啟連線。",
+        )
 
     def show_about_dialog(self) -> None:
         QMessageBox.information(
@@ -769,6 +790,7 @@ class AreaScannerMainWindow(QMainWindow):
 
     def on_worker_error(self, message: str) -> None:
         self.append_log(f"[錯誤] {message}")
+        self.worker = None
         self.label_runtime.setText("Error")
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
