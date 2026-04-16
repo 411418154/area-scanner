@@ -38,7 +38,7 @@ visualizer_3d.py
 1. X-Y View（最接近原圖）
 2. Y-Z View（簡化投影）
 3. X-Z View（簡化投影）
-4. 3D View（目前先退回 X-Y 畫法，保留選項名稱）
+4. 3D View（獨立 OpenGL renderer）
 5. Dynamic / Static / Tracked 目標顯示
 6. Target 投影線
 7. 左上角統計文字
@@ -51,7 +51,7 @@ visualizer_3d.py
 - point type 顏色分群
 - target ID 文字更貼近原版樣式
 - 更多 zone 顯示
-- 更完整的 3D 視圖
+- 3D renderer 效能進一步優化
 """
 
 from __future__ import annotations
@@ -59,18 +59,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
 import math
+import time
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QStackedLayout, QVBoxLayout, QWidget
 
 try:
     import numpy as np
     import pyqtgraph as pg
+    try:
+        import pyqtgraph.opengl as gl
+        HAS_OPENGL = True
+    except Exception:
+        gl = None
+        HAS_OPENGL = False
     HAS_PYQTGRAPH = True
 except Exception:
     np = None
     pg = None
+    gl = None
+    HAS_OPENGL = False
     HAS_PYQTGRAPH = False
 
 
@@ -152,9 +161,16 @@ class AreaScanner3DWidget(QWidget):
         # 這兩個先保留，未來若要做高度補償 / tilt 修正可再接。
         self._mounting_height_m = 2.0
         self._elevation_tilt_deg = 0.0
+        self._max_points_per_frame = 4000
+        self._last_render_start_ts = time.perf_counter()
+        self._last_render_ms = 0.0
+        self._last_fps = 0.0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        self.metrics_label = QLabel("FPS: 0.0 | Render: 0.00 ms")
+        self.metrics_label.setStyleSheet("color: #dddddd; background: #111111; padding: 2px 6px;")
+        layout.addWidget(self.metrics_label)
 
         if not HAS_PYQTGRAPH:
             placeholder = QLabel(
@@ -165,13 +181,17 @@ class AreaScanner3DWidget(QWidget):
             placeholder.setAlignment(Qt.AlignCenter)
             layout.addWidget(placeholder)
             self.plot = None
+            self.gl_view = None
             return
 
         assert pg is not None
         pg.setConfigOptions(antialias=True)
 
+        self._stack_layout = QStackedLayout()
+        layout.addLayout(self._stack_layout)
+
         # --------------------------------------------------
-        # A. 建立主圖表區
+        # A. 建立 2D 圖表區
         # --------------------------------------------------
         self.plot = pg.PlotWidget()
         self.plot.setBackground(self.style.background)
@@ -231,18 +251,49 @@ class AreaScanner3DWidget(QWidget):
         self.plot.addItem(self.scatter_static)
         self.plot.addItem(self.scatter_targets)
 
-        # target projection 線與文字會每個 frame 重建，所以先保存清單方便清除。
-        self._projection_items: list = []
-        self._target_text_items: list = []
-
         # 左上角統計資訊
         self.stats_text = pg.TextItem(anchor=(0, 0), fill=pg.mkBrush(0, 0, 0, 0))
         font = QFont("Consolas")
         font.setPointSize(12)
         self.stats_text.setFont(font)
         self.plot.addItem(self.stats_text)
+        self._stack_layout.addWidget(self.plot)
+        self._stack_layout.setCurrentWidget(self.plot)
 
-        layout.addWidget(self.plot)
+        # --------------------------------------------------
+        # A-2. 建立獨立 3D renderer（OpenGL）
+        # --------------------------------------------------
+        self.gl_view = None
+        self.gl_placeholder = None
+        self.gl_dynamic = None
+        self.gl_static = None
+        self.gl_targets = None
+        self._gl_target_vectors: list = []
+        if HAS_OPENGL and gl is not None:
+            self.gl_view = gl.GLViewWidget()
+            self.gl_view.setBackgroundColor(self.style.background)
+            self.gl_view.opts["distance"] = 20
+            self.gl_view.opts["elevation"] = 20
+            self.gl_view.opts["azimuth"] = 45
+            grid = gl.GLGridItem()
+            grid.scale(1, 1, 1)
+            self.gl_view.addItem(grid)
+
+            self.gl_dynamic = gl.GLScatterPlotItem()
+            self.gl_static = gl.GLScatterPlotItem()
+            self.gl_targets = gl.GLScatterPlotItem()
+            self.gl_view.addItem(self.gl_dynamic)
+            self.gl_view.addItem(self.gl_static)
+            self.gl_view.addItem(self.gl_targets)
+            self._stack_layout.addWidget(self.gl_view)
+        else:
+            self.gl_placeholder = QLabel("3D renderer 不可用：缺少 pyqtgraph.opengl / OpenGL 環境。")
+            self.gl_placeholder.setAlignment(Qt.AlignCenter)
+            self._stack_layout.addWidget(self.gl_placeholder)
+
+        # target overlay 使用可重用 pool，避免每幀建立/刪除 item。
+        self._projection_items: list = []
+        self._target_text_items: list = []
 
         # 先畫一次背景圖層
         self._refresh_background_layers()
@@ -252,7 +303,10 @@ class AreaScanner3DWidget(QWidget):
             num_dynamic=0,
             num_static=0,
             num_targets=0,
+            render_dynamic=0,
+            render_static=0,
         )
+        self._update_metrics_label()
 
     # ------------------------------------------------------
     # 3. 對外公開：設定類方法
@@ -264,12 +318,21 @@ class AreaScanner3DWidget(QWidget):
         注意：
         - X-Y View 是最接近原 MATLAB 畫面。
         - Y-Z / X-Z View 目前是簡化投影版本。
-        - 3D View 目前先沿用 X-Y 呈現，不做 OpenGL 3D。
+        - 3D View 走獨立 OpenGL renderer。
         """
         self._view_mode = view_mode.strip()
 
         if not HAS_PYQTGRAPH or self.plot is None:
             return
+
+        if self._view_mode == "3D View":
+            if self.gl_view is not None:
+                self._stack_layout.setCurrentWidget(self.gl_view)
+            elif self.gl_placeholder is not None:
+                self._stack_layout.setCurrentWidget(self.gl_placeholder)
+            return
+
+        self._stack_layout.setCurrentWidget(self.plot)
 
         # 軸標籤跟範圍會依視角切換。
         if self._view_mode == "X-Y View":
@@ -282,7 +345,7 @@ class AreaScanner3DWidget(QWidget):
             self.plot.setLabel("bottom", "X [m]", color=self.style.x_axis_color)
             self.plot.setLabel("left", "Z [m]", color=self.style.label_color)
         else:
-            # 3D View 目前先用 X-Y 平面顯示，至少畫面先穩定。
+            # 未知模式時回到 X-Y 預設。
             self.plot.setLabel("bottom", "X [m]", color=self.style.x_axis_color)
             self.plot.setLabel("left", "Y [m]", color=self.style.label_color)
 
@@ -334,6 +397,10 @@ class AreaScanner3DWidget(QWidget):
         self._fov_inner_range_m = min(self._fov_outer_range_m, max(0.0, inner_range_m))
         self._refresh_background_layers()
 
+    def set_render_limits(self, max_points_per_frame: int) -> None:
+        """限制每幀最多渲染點數，超過則降採樣。"""
+        self._max_points_per_frame = max(100, int(max_points_per_frame))
+
     # ------------------------------------------------------
     # 4. 對外公開：用 frame 更新畫面
     # ------------------------------------------------------
@@ -347,32 +414,43 @@ class AreaScanner3DWidget(QWidget):
         """
         if not HAS_PYQTGRAPH or self.plot is None:
             return
+        start_ts = time.perf_counter()
+        delta_s = start_ts - self._last_render_start_ts
+        if delta_s > 0:
+            self._last_fps = 1.0 / delta_s
+        self._last_render_start_ts = start_ts
 
         frame_info = self._normalize_frame(frame)
+        dynamic_points = self._downsample_points(frame_info["dynamic_points"], self._max_points_per_frame)
+        static_points = self._downsample_points(frame_info["static_points"], self._max_points_per_frame)
 
-        # 先把舊的 projection 線和 target 文字清掉，避免殘影。
-        self._clear_dynamic_overlay_items()
+        if self._view_mode == "3D View":
+            self._update_3d_view(dynamic_points, static_points, frame_info["targets"])
+        else:
+            dyn_2d = self._project_points(dynamic_points)
+            sta_2d = self._project_points(static_points)
+            tar_2d = self._project_targets(frame_info["targets"])
 
-        dyn_2d = self._project_points(frame_info["dynamic_points"])
-        sta_2d = self._project_points(frame_info["static_points"])
-        tar_2d = self._project_targets(frame_info["targets"])
+            # 更新三種散點
+            self._set_scatter_data(self.scatter_dynamic, dyn_2d)
+            self._set_scatter_data(self.scatter_static, sta_2d)
+            self._set_scatter_data(self.scatter_targets, tar_2d)
 
-        # 更新三種散點
-        self._set_scatter_data(self.scatter_dynamic, dyn_2d)
-        self._set_scatter_data(self.scatter_static, sta_2d)
-        self._set_scatter_data(self.scatter_targets, tar_2d)
-
-        # 更新 target 的投影線與文字
-        self._draw_target_overlays(frame_info["targets"])
+            # 更新 target 的投影線與文字
+            self._draw_target_overlays(frame_info["targets"])
 
         # 左上角統計資訊
+        self._last_render_ms = (time.perf_counter() - start_ts) * 1000.0
         self._update_stats_text(
             frame_number=frame_info["frame_number"],
             num_frames_in_buffer=buffer_frame_count,
             num_dynamic=len(frame_info["dynamic_points"]),
             num_static=len(frame_info["static_points"]),
             num_targets=len(frame_info["targets"]),
+            render_dynamic=len(dynamic_points),
+            render_static=len(static_points),
         )
+        self._update_metrics_label()
 
     def clear(self) -> None:
         """清空目前畫面資料。"""
@@ -383,7 +461,9 @@ class AreaScanner3DWidget(QWidget):
         self._set_scatter_data(self.scatter_static, [])
         self._set_scatter_data(self.scatter_targets, [])
         self._clear_dynamic_overlay_items()
-        self._update_stats_text(0, 0, 0, 0, 0)
+        self._clear_3d_items()
+        self._update_stats_text(0, 0, 0, 0, 0, 0, 0)
+        self._update_metrics_label()
 
     # ------------------------------------------------------
     # 5. 內部工具：畫背景與範圍
@@ -393,7 +473,7 @@ class AreaScanner3DWidget(QWidget):
         if self.plot is None:
             return
 
-        if view_mode == "X-Y View" or view_mode == "3D View":
+        if view_mode == "X-Y View":
             self.plot.setXRange(*self.style.x_range_xy, padding=0.0)
             self.plot.setYRange(*self.style.y_range_xy, padding=0.0)
         else:
@@ -417,7 +497,7 @@ class AreaScanner3DWidget(QWidget):
         self.item_x_axis.setData([x_min, x_max], [0.0, 0.0])
         self.item_y_axis.setData([0.0, 0.0], [y_min, y_max])
 
-        if self._view_mode != "X-Y View" and self._view_mode != "3D View":
+        if self._view_mode != "X-Y View":
             # 非 XY 視角時，先不畫 MATLAB 那種扇形區域，避免投影看起來混亂。
             self.item_warn_zone.setData([], [])
             self.item_crit_zone.setData([], [])
@@ -594,6 +674,80 @@ class AreaScanner3DWidget(QWidget):
                 projected.append((x, y))
         return projected
 
+    @staticmethod
+    def _downsample_points(points: Sequence[tuple[float, float, float]], max_points: int) -> list[tuple[float, float, float]]:
+        """將單幀點數限制在 max_points，使用等步距降採樣。"""
+        if max_points <= 0:
+            return []
+        total = len(points)
+        if total <= max_points:
+            return list(points)
+
+        step = total / max_points
+        sampled = []
+        idx = 0.0
+        for _ in range(max_points):
+            sampled.append(points[int(idx)])
+            idx += step
+        return sampled
+
+    def _update_3d_view(
+        self,
+        dynamic_points: Sequence[tuple[float, float, float]],
+        static_points: Sequence[tuple[float, float, float]],
+        targets: Sequence[dict],
+    ) -> None:
+        """更新獨立 3D OpenGL renderer。"""
+        if not (HAS_OPENGL and gl is not None and np is not None and self.gl_view is not None):
+            return
+
+        def _to_np(points: Sequence[tuple[float, float, float]]):
+            if not points:
+                return np.empty((0, 3), dtype=float)
+            return np.asarray(points, dtype=float)
+
+        dyn_np = _to_np(dynamic_points)
+        sta_np = _to_np(static_points)
+        tar_np = np.asarray(
+            [(float(t.get("x", 0.0)), float(t.get("y", 0.0)), float(t.get("z", 0.0))) for t in targets],
+            dtype=float,
+        ) if targets else np.empty((0, 3), dtype=float)
+
+        self.gl_dynamic.setData(pos=dyn_np, size=4.0, color=(0.33, 0.78, 0.92, 1.0))
+        self.gl_static.setData(pos=sta_np, size=6.0, color=(1.0, 0.0, 1.0, 1.0))
+        self.gl_targets.setData(pos=tar_np, size=9.0, color=(0.4, 0.8, 1.0, 1.0))
+        self._draw_target_vectors_3d(targets)
+
+    def _draw_target_vectors_3d(self, targets: Sequence[dict]) -> None:
+        if not (HAS_OPENGL and gl is not None and np is not None and self.gl_view is not None):
+            return
+        self._ensure_gl_vector_pool(len(targets))
+        for idx, target in enumerate(targets):
+            x = float(target.get("x", 0.0))
+            y = float(target.get("y", 0.0))
+            z = float(target.get("z", 0.0))
+            vx = float(target.get("vel_x", 0.0))
+            vy = float(target.get("vel_y", 0.0))
+            vz = float(target.get("vel_z", 0.0))
+            pos = np.asarray(
+                [[x, y, z], [x + vx * self._projection_time_s, y + vy * self._projection_time_s, z + vz * self._projection_time_s]],
+                dtype=float,
+            )
+            item = self._gl_target_vectors[idx]
+            item.setData(pos=pos, color=(1.0, 1.0, 0.0, 1.0), width=2.0, mode="lines")
+            item.setVisible(True)
+        for idx in range(len(targets), len(self._gl_target_vectors)):
+            self._gl_target_vectors[idx].setVisible(False)
+
+    def _ensure_gl_vector_pool(self, count: int) -> None:
+        if not (HAS_OPENGL and gl is not None and self.gl_view is not None):
+            return
+        while len(self._gl_target_vectors) < count:
+            item = gl.GLLinePlotItem()
+            item.setVisible(False)
+            self.gl_view.addItem(item)
+            self._gl_target_vectors.append(item)
+
     # ------------------------------------------------------
     # 7. 內部工具：target 投影線與文字
     # ------------------------------------------------------
@@ -607,8 +761,10 @@ class AreaScanner3DWidget(QWidget):
             return
 
         assert pg is not None
+        targets_list = list(targets)
+        self._ensure_target_overlay_pool(len(targets_list))
 
-        for target in targets:
+        for idx, target in enumerate(targets_list):
             tid = target.get("tid", "?")
             x = float(target.get("x", 0.0))
             y = float(target.get("y", 0.0))
@@ -627,18 +783,30 @@ class AreaScanner3DWidget(QWidget):
                 x0, y0 = x, y
                 x1, y1 = x + vx * self._projection_time_s, y + vy * self._projection_time_s
 
-            line_item = self.plot.plot(
-                [x0, x1],
-                [y0, y1],
-                pen=pg.mkPen(self.style.projection_pen, width=2.2),
-            )
+            line_item = self._projection_items[idx]
+            line_item.setData([x0, x1], [y0, y1])
+            line_item.setVisible(True)
+
+            text_item = self._target_text_items[idx]
+            text_item.setHtml(f'<div style="color:#ffff00; font-size:12pt;">T{tid}</div>')
+            text_item.setPos(x0, y0)
+            text_item.setVisible(True)
+
+        for idx in range(len(targets_list), len(self._projection_items)):
+            self._projection_items[idx].setVisible(False)
+            self._target_text_items[idx].setVisible(False)
+
+    def _ensure_target_overlay_pool(self, count: int) -> None:
+        if not HAS_PYQTGRAPH or self.plot is None:
+            return
+        assert pg is not None
+        while len(self._projection_items) < count:
+            line_item = self.plot.plot([], [], pen=pg.mkPen(self.style.projection_pen, width=2.2))
+            line_item.setVisible(False)
             self._projection_items.append(line_item)
 
-            text_item = pg.TextItem(
-                html=f'<div style="color:#ffff00; font-size:12pt;">T{tid}</div>',
-                anchor=(0.5, 1.0),
-            )
-            text_item.setPos(x0, y0)
+            text_item = pg.TextItem(anchor=(0.5, 1.0))
+            text_item.setVisible(False)
             self.plot.addItem(text_item)
             self._target_text_items.append(text_item)
 
@@ -648,18 +816,19 @@ class AreaScanner3DWidget(QWidget):
             return
 
         for item in self._projection_items:
-            try:
-                self.plot.removeItem(item)
-            except Exception:
-                pass
-        self._projection_items.clear()
-
+            item.setVisible(False)
         for item in self._target_text_items:
-            try:
-                self.plot.removeItem(item)
-            except Exception:
-                pass
-        self._target_text_items.clear()
+            item.setVisible(False)
+
+    def _clear_3d_items(self) -> None:
+        if not (HAS_OPENGL and np is not None and self.gl_dynamic is not None):
+            return
+        empty = np.empty((0, 3), dtype=float)
+        self.gl_dynamic.setData(pos=empty, size=4.0, color=(0.33, 0.78, 0.92, 1.0))
+        self.gl_static.setData(pos=empty, size=6.0, color=(1.0, 0.0, 1.0, 1.0))
+        self.gl_targets.setData(pos=empty, size=9.0, color=(0.4, 0.8, 1.0, 1.0))
+        for item in self._gl_target_vectors:
+            item.setVisible(False)
 
     # ------------------------------------------------------
     # 8. 內部工具：散點與文字
@@ -682,6 +851,8 @@ class AreaScanner3DWidget(QWidget):
         num_dynamic: int,
         num_static: int,
         num_targets: int,
+        render_dynamic: int,
+        render_static: int,
     ) -> None:
         """
         更新左上角統計文字。
@@ -697,13 +868,18 @@ class AreaScanner3DWidget(QWidget):
             <div style="color:white; font-size:16pt; line-height:1.5;">
                 Frame: {frame_number}<br>
                 Num Frames in Buffer: {num_frames_in_buffer}<br>
-                Dynamic Points: {num_dynamic}<br>
-                Static Points: {num_static}<br>
-                Num Tracked Obj: {num_targets}
+                Dynamic Points: {num_dynamic} (draw {render_dynamic})<br>
+                Static Points: {num_static} (draw {render_static})<br>
+                Num Tracked Obj: {num_targets}<br>
+                FPS: {self._last_fps:5.1f}<br>
+                Render: {self._last_render_ms:5.2f} ms
             </div>
             """
         )
         self.stats_text.setPos(x_min + 0.6, y_max - 0.6)
+
+    def _update_metrics_label(self) -> None:
+        self.metrics_label.setText(f"FPS: {self._last_fps:5.1f} | Render: {self._last_render_ms:5.2f} ms")
 
     # ------------------------------------------------------
     # 9. 純數學 / 座標輔助函式
