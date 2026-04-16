@@ -101,8 +101,8 @@ class ViewerStyle:
     projection_pen: str = "#ffff00"    # 黃色投影線
 
     # 區域顏色
-    warn_brush: tuple = (128, 128, 0, 130)     # 橄欖黃半透明
-    crit_brush: tuple = (110, 0, 0, 170)       # 深紅半透明
+    warn_brush: tuple = (128, 128, 0, 120)     # 橄欖黃半透明
+    crit_brush: tuple = (110, 0, 0, 130)       # 深紅半透明
     zone_edge_pen: str = "#ffffff"
     fov_pen: str = "#d9d9d9"
 
@@ -144,6 +144,10 @@ class AreaScanner3DWidget(QWidget):
         self._warn_start_m = 2.0
         self._warn_end_m = 4.0
         self._projection_time_s = 2.0
+        self._fov_outer_angle_deg = 59.0
+        self._fov_inner_angle_deg = 30.0
+        self._fov_outer_range_m = 7.2
+        self._fov_inner_range_m = 2.1
 
         # 這兩個先保留，未來若要做高度補償 / tilt 修正可再接。
         self._mounting_height_m = 2.0
@@ -205,13 +209,13 @@ class AreaScanner3DWidget(QWidget):
         # Warning / Critical 半圓區域
         self.item_warn_zone = self.plot.plot(
             [], [],
-            pen=pg.mkPen(self.style.zone_edge_pen, width=1.0),
+            pen=pg.mkPen(self.style.zone_edge_pen, width=0.9),
             fillLevel=0.0,
             brush=pg.mkBrush(*self.style.warn_brush),
         )
         self.item_crit_zone = self.plot.plot(
             [], [],
-            pen=pg.mkPen(self.style.zone_edge_pen, width=1.0),
+            pen=pg.mkPen(self.style.zone_edge_pen, width=0.9),
             fillLevel=0.0,
             brush=pg.mkBrush(*self.style.crit_brush),
         )
@@ -309,13 +313,26 @@ class AreaScanner3DWidget(QWidget):
 
     def set_mount_config(self, mounting_height_m: float, elevation_tilt_deg: float) -> None:
         """
-        先把 mount / tilt 設定記住。
+        更新雷達安裝高度與仰角。
 
-        這一版還沒有把它實際反映到點位座標，
-        但先留好介面，後面比較好擴充。
+        這些參數會在 _normalize_frame 內用於雷達座標 -> 世界座標補償。
         """
         self._mounting_height_m = mounting_height_m
         self._elevation_tilt_deg = elevation_tilt_deg
+
+    def set_fov_config(
+        self,
+        outer_angle_deg: float,
+        inner_angle_deg: float,
+        outer_range_m: float,
+        inner_range_m: float,
+    ) -> None:
+        """由 gui_main.py 同步 FOV 角度與範圍設定。"""
+        self._fov_outer_angle_deg = max(0.0, outer_angle_deg)
+        self._fov_inner_angle_deg = min(self._fov_outer_angle_deg, max(0.0, inner_angle_deg))
+        self._fov_outer_range_m = max(0.0, outer_range_m)
+        self._fov_inner_range_m = min(self._fov_outer_range_m, max(0.0, inner_range_m))
+        self._refresh_background_layers()
 
     # ------------------------------------------------------
     # 4. 對外公開：用 frame 更新畫面
@@ -410,26 +427,26 @@ class AreaScanner3DWidget(QWidget):
             self.item_fov_inner_right.setData([], [])
             return
 
-        # 畫外圈 warning 半圓
+        # 畫外圈 warning 環形扇區（warn_start ~ warn_end）
         if self._enable_zones and self._warn_end_m > 0:
-            x_warn, y_warn = self._semi_circle(self._warn_end_m)
+            x_warn, y_warn = self._ring_sector_polygon(self._warn_start_m, self._warn_end_m)
             self.item_warn_zone.setData(x_warn, y_warn)
         else:
             self.item_warn_zone.setData([], [])
 
-        # 畫內圈 critical 半圓
+        # 畫內圈 critical 環形扇區（critical_start ~ critical_end）
         if self._enable_zones and self._critical_end_m > 0:
-            x_crit, y_crit = self._semi_circle(self._critical_end_m)
+            x_crit, y_crit = self._ring_sector_polygon(self._critical_start_m, self._critical_end_m)
             self.item_crit_zone.setData(x_crit, y_crit)
         else:
             self.item_crit_zone.setData([], [])
 
         # FOV 線：角度先抓成接近圖片的外觀
         # 這裡的角度是相對 Y 軸展開的角度。
-        outer_angle_deg = 59.0
-        inner_angle_deg = 30.0
-        outer_y_end = 7.2
-        inner_y_end = 2.1
+        outer_angle_deg = self._fov_outer_angle_deg
+        inner_angle_deg = self._fov_inner_angle_deg
+        outer_y_end = self._fov_outer_range_m
+        inner_y_end = self._fov_inner_range_m
 
         self.item_fov_left.setData(*self._ray_from_origin(-outer_angle_deg, outer_y_end))
         self.item_fov_right.setData(*self._ray_from_origin(+outer_angle_deg, outer_y_end))
@@ -442,25 +459,31 @@ class AreaScanner3DWidget(QWidget):
     def _normalize_frame(self, frame) -> dict:
         """
         把 ParsedFrame / dict 轉成統一格式，方便後面統一處理。
+
+        注意：這裡會先把雷達座標轉成世界座標（含 pitch/高度補償），
+        後續 _project_points / _project_targets 都直接吃補償後座標。
         """
         # 先處理 parser_as.ParsedFrame
         if hasattr(frame, "header"):
             dynamic_points = []
             for p in getattr(frame, "dynamic_points", []):
-                dynamic_points.append((float(p.x), float(p.y), float(p.z)))
+                xw, yw, zw = self._transform_radar_to_world(float(p.x), float(p.y), float(p.z))
+                dynamic_points.append((xw, yw, zw))
 
             static_points = []
             for p in getattr(frame, "static_points", []):
-                static_points.append((float(p.x), float(p.y), float(p.z)))
+                xw, yw, zw = self._transform_radar_to_world(float(p.x), float(p.y), float(p.z))
+                static_points.append((xw, yw, zw))
 
             targets = []
             for t in getattr(frame, "targets", []):
+                xw, yw, zw = self._transform_radar_to_world(float(t.pos_x), float(t.pos_y), float(t.pos_z))
                 targets.append(
                     {
                         "tid": int(t.tid),
-                        "x": float(t.pos_x),
-                        "y": float(t.pos_y),
-                        "z": float(t.pos_z),
+                        "x": xw,
+                        "y": yw,
+                        "z": zw,
                         "vel_x": float(t.vel_x),
                         "vel_y": float(t.vel_y),
                         "vel_z": float(t.vel_z),
@@ -476,12 +499,61 @@ class AreaScanner3DWidget(QWidget):
 
         # 再處理 dict
         frame_dict = dict(frame)
+
+        dynamic_points = []
+        for p in frame_dict.get("dynamic_points", []):
+            if len(p) < 3:
+                continue
+            xw, yw, zw = self._transform_radar_to_world(float(p[0]), float(p[1]), float(p[2]))
+            dynamic_points.append((xw, yw, zw))
+
+        static_points = []
+        for p in frame_dict.get("static_points", []):
+            if len(p) < 3:
+                continue
+            xw, yw, zw = self._transform_radar_to_world(float(p[0]), float(p[1]), float(p[2]))
+            static_points.append((xw, yw, zw))
+
+        targets = []
+        for t in frame_dict.get("tracked_targets", []):
+            xw, yw, zw = self._transform_radar_to_world(
+                float(t.get("x", 0.0)),
+                float(t.get("y", 0.0)),
+                float(t.get("z", 0.0)),
+            )
+            target = dict(t)
+            target["x"] = xw
+            target["y"] = yw
+            target["z"] = zw
+            targets.append(target)
+
         return {
             "frame_number": int(frame_dict.get("frame_number", 0)),
-            "dynamic_points": list(frame_dict.get("dynamic_points", [])),
-            "static_points": list(frame_dict.get("static_points", [])),
-            "targets": list(frame_dict.get("tracked_targets", [])),
+            "dynamic_points": dynamic_points,
+            "static_points": static_points,
+            "targets": targets,
         }
+
+    def _transform_radar_to_world(self, x: float, y: float, z: float) -> tuple[float, float, float]:
+        """
+        將雷達座標轉到世界座標。
+
+        座標系定義：
+        - 雷達座標：x 向右、y 向前、z 向上。
+        - 安裝傾角：繞 X 軸旋轉（右手定則，正角讓 y 軸朝 +z 方向抬升）。
+        - 安裝高度：旋轉後再做世界座標 z 方向平移（+mounting_height）。
+        """
+        tilt_rad = math.radians(self._elevation_tilt_deg)
+        cos_tilt = math.cos(tilt_rad)
+        sin_tilt = math.sin(tilt_rad)
+
+        # X 軸旋轉：x 不變，(y, z) 進行 2D 旋轉。
+        xr = x
+        yr = y * cos_tilt - z * sin_tilt
+        zr = y * sin_tilt + z * cos_tilt
+
+        # 旋轉後再補償雷達離地高度。
+        return xr, yr, zr + self._mounting_height_m
 
     def _project_points(self, points: Iterable[Sequence[float]]) -> list[tuple[float, float]]:
         """
@@ -656,6 +728,45 @@ class AreaScanner3DWidget(QWidget):
         x = radius * np.cos(theta)
         y = radius * np.sin(theta)
         return x, y
+
+    def _ring_sector_polygon(
+        self,
+        r_inner: float,
+        r_outer: float,
+        half_angle_deg: float = 90.0,
+        n: int = 181,
+    ) -> tuple[list[float], list[float]]:
+        """
+        產生以 +Y 軸為中心展開的環形扇區 polygon，可直接給 PlotDataItem.setData(x, y)。
+        """
+        assert np is not None
+
+        # 最後一道防呆，避免 GUI 輸入或資料同步誤差造成奇怪形狀。
+        r_inner = max(0.0, float(r_inner))
+        r_outer = max(r_inner, float(r_outer))
+        if r_outer <= 0.0 or r_outer <= r_inner:
+            return [], []
+
+        num_points = max(3, int(n))
+        theta = np.linspace(-float(half_angle_deg), float(half_angle_deg), num_points)
+        theta_rad = np.deg2rad(theta)
+
+        # 外弧：由左到右（相對 +Y 軸）
+        x_outer = r_outer * np.sin(theta_rad)
+        y_outer = r_outer * np.cos(theta_rad)
+
+        # 內弧：反向由右到左回來，構成封閉環形區域
+        theta_rev_rad = theta_rad[::-1]
+        x_inner = r_inner * np.sin(theta_rev_rad)
+        y_inner = r_inner * np.cos(theta_rev_rad)
+
+        x_poly = np.concatenate([x_outer, x_inner])
+        y_poly = np.concatenate([y_outer, y_inner])
+
+        # 額外補首點，確保視覺上是封閉 polygon。
+        x_poly = np.append(x_poly, x_poly[0])
+        y_poly = np.append(y_poly, y_poly[0])
+        return x_poly.tolist(), y_poly.tolist()
 
     @staticmethod
     def _ray_from_origin(angle_from_y_deg: float, y_end: float):
