@@ -126,6 +126,7 @@ class ParsedFrame:
     tlv_types: List[int] = field(default_factory=list)
     tlv_length_mode: str = ""
     has_target_list_tlv: bool = False
+    ambiguous_mode: bool = False
     warnings: List[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -162,6 +163,7 @@ class ParsedFrame:
             "tlv_types": list(self.tlv_types),
             "tlv_length_mode": self.tlv_length_mode,
             "has_target_list_tlv": self.has_target_list_tlv,
+            "ambiguous_mode": self.ambiguous_mode,
             "warnings": list(self.warnings),
         }
 
@@ -296,6 +298,13 @@ def _score_frame(frame: ParsedFrame, final_offset: int, packet_len: int) -> int:
     if frame.has_target_list_tlv:
         score += 6
 
+    # TLV 實際可解析數量和 header 聲明一致時加分。
+    tlv_count_diff = abs(len(frame.tlvs) - frame.header.num_tlvs)
+    if tlv_count_diff == 0:
+        score += 8
+    else:
+        score -= 10 * tlv_count_diff
+
     # 剩餘尾巴若很小，通常只是 packet padding；太大則代表 offset 可能歪了。
     leftover = packet_len - final_offset
     if leftover == 0:
@@ -311,6 +320,7 @@ def _score_frame(frame: ParsedFrame, final_offset: int, packet_len: int) -> int:
 def _parse_packet_with_mode(
     packet: bytes,
     tlv_length_mode: Literal["payload_only", "inclusive"],
+    parser_debug: bool = False,
 ) -> Tuple[ParsedFrame, int]:
     header = parse_frame_header(packet)
 
@@ -328,20 +338,33 @@ def _parse_packet_with_mode(
 
     for tlv_index in range(header.num_tlvs):
         if offset + TLV_HEADER_LEN > len(packet):
-            raise PacketFormatError(f"TLV header 不完整，index={tlv_index}")
+            frame.warnings.append(
+                f"TLV header 不完整，index={tlv_index}，可解析 TLV 數={len(frame.tlvs)}，"
+                f"header.num_tlvs={header.num_tlvs}"
+            )
+            break
 
         tlv_type, tlv_length = struct.unpack_from("<II", packet, offset)
         offset += TLV_HEADER_LEN
 
         payload_length = tlv_length if tlv_length_mode == "payload_only" else tlv_length - TLV_HEADER_LEN
         if payload_length < 0:
-            raise PacketFormatError(
-                f"TLV payload_length 變成負數，type={tlv_type}, length={tlv_length}"
+            frame.warnings.append(
+                f"TLV payload_length 變成負數，index={tlv_index}, type={tlv_type}, length={tlv_length}，"
+                f"可解析 TLV 數={len(frame.tlvs)}，header.num_tlvs={header.num_tlvs}"
             )
+            break
         if offset + payload_length > len(packet):
-            raise PacketFormatError(
+            frame.warnings.append(
                 f"TLV 超出封包範圍，index={tlv_index}, type={tlv_type}, "
                 f"payload_length={payload_length}, offset={offset}, packet_len={len(packet)}"
+            )
+            break
+
+        if parser_debug:
+            frame.warnings.append(
+                f"[parser_debug] index={tlv_index}, tlv_type={tlv_type}, offset={offset}, "
+                f"payload_length={payload_length}"
             )
 
         payload = packet[offset: offset + payload_length]
@@ -368,17 +391,22 @@ def _parse_packet_with_mode(
         except Exception as exc:
             frame.warnings.append(f"TLV {tlv_type} 解析警告：{exc}")
 
+    if len(frame.tlvs) != header.num_tlvs:
+        frame.warnings.append(
+            f"header.num_tlvs={header.num_tlvs}，但實際可解析 TLV 數={len(frame.tlvs)}。"
+        )
+
     return frame, offset
 
 
-def parse_packet(packet: bytes) -> ParsedFrame:
-    candidates: List[Tuple[int, ParsedFrame]] = []
+def parse_packet(packet: bytes, parser_debug: bool = False) -> ParsedFrame:
+    candidates: List[Tuple[int, ParsedFrame, str]] = []
     errors: List[str] = []
 
     for mode in ("payload_only", "inclusive"):
         try:
-            frame, final_offset = _parse_packet_with_mode(packet, mode)  # type: ignore[arg-type]
-            candidates.append((_score_frame(frame, final_offset, len(packet)), frame))
+            frame, final_offset = _parse_packet_with_mode(packet, mode, parser_debug=parser_debug)  # type: ignore[arg-type]
+            candidates.append((_score_frame(frame, final_offset, len(packet)), frame, mode))
         except Exception as exc:
             errors.append(f"{mode}: {exc}")
 
@@ -386,7 +414,18 @@ def parse_packet(packet: bytes) -> ParsedFrame:
         raise PacketFormatError("packet 解析失敗：" + " | ".join(errors))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
-    best = candidates[0][1]
+    best_score, best, best_mode = candidates[0]
+    if len(candidates) >= 2:
+        second_score, _, second_mode = candidates[1]
+        score_gap = best_score - second_score
+        best.warnings.append(
+            f"TLV 模式評分：best={best_mode}({best_score}), second={second_mode}({second_score}), gap={score_gap}"
+        )
+        if score_gap <= 2:
+            best.ambiguous_mode = True
+            best.warnings.append(
+                f"ambiguous_mode=True：兩種 TLV mode 分數差距過小 (gap={score_gap} <= 2)。"
+            )
 
     if best.header.num_detected_obj > 0 and not best.has_target_list_tlv:
         best.warnings.append(
@@ -455,9 +494,9 @@ class AreaScannerParser:
             packets.append(packet)
         return packets
 
-    def feed_and_parse(self, data: bytes) -> List[ParsedFrame]:
+    def feed_and_parse(self, data: bytes, parser_debug: bool = False) -> List[ParsedFrame]:
         self.append_data(data)
         frames: List[ParsedFrame] = []
         for packet in self.extract_packets():
-            frames.append(parse_packet(packet))
+            frames.append(parse_packet(packet, parser_debug=parser_debug))
         return frames
