@@ -80,6 +80,8 @@ class SerialConfig:
 
     # 送 cfg 時，每條命令之間保留一點點時間，讓雷達有時間消化命令。
     command_delay_s: float = 0.02
+    # 失敗重試與 backoff（秒），預設等同 3 次：100/300/700ms。
+    retry_backoff_s: tuple[float, ...] = (0.1, 0.3, 0.7)
 
 
 @dataclass(slots=True)
@@ -102,6 +104,14 @@ class SerialManagerError(Exception):
 
 class PortOpenError(SerialManagerError):
     """開啟 COM Port 失敗時使用。"""
+
+
+class PortBusyError(PortOpenError):
+    """COM Port 被其他程式占用。"""
+
+
+class ResponseTimeoutError(SerialManagerError):
+    """等待設備回應超時。"""
 
 
 class ConfigFileError(SerialManagerError):
@@ -190,25 +200,30 @@ class SerialManager:
         若任一埠開啟失敗，會先把已開啟的另一個埠關掉，避免資源半開狀態。
         """
         self.close_ports()
+        last_error: Optional[Exception] = None
 
-        try:
-            self.cli_serial = serial.Serial(
-                port=self.config.cli_port,
-                baudrate=self.config.cli_baud,
-                timeout=self.config.timeout_s,
-            )
+        for attempt, backoff_s in enumerate(self.config.retry_backoff_s, start=1):
+            try:
+                self.cli_serial = serial.Serial(
+                    port=self.config.cli_port,
+                    baudrate=self.config.cli_baud,
+                    timeout=self.config.timeout_s,
+                )
 
-            self.data_serial = serial.Serial(
-                port=self.config.data_port,
-                baudrate=self.config.data_baud,
-                timeout=self.config.timeout_s,
-            )
-        except Exception as exc:
-            self.close_ports()
-            raise PortOpenError(
-                f"無法開啟序列埠。CLI={self.config.cli_port}/{self.config.cli_baud}, "
-                f"DATA={self.config.data_port}/{self.config.data_baud} | 原因：{exc}"
-            ) from exc
+                self.data_serial = serial.Serial(
+                    port=self.config.data_port,
+                    baudrate=self.config.data_baud,
+                    timeout=self.config.timeout_s,
+                )
+                return
+            except Exception as exc:
+                self.close_ports()
+                last_error = exc
+                if attempt < len(self.config.retry_backoff_s):
+                    time.sleep(backoff_s)
+
+        assert last_error is not None
+        raise self._classify_port_open_error(last_error) from last_error
 
     def close_ports(self) -> None:
         """
@@ -318,7 +333,36 @@ class SerialManager:
             if text in {"Done", "mmwDemo:/"}:
                 break
 
-        return " | ".join(lines)
+        response_text = " | ".join(lines)
+        if not response_text:
+            raise ResponseTimeoutError(f"【回應超時】等待 CLI 回應超時：{clean_command}")
+        return response_text
+
+    @staticmethod
+    def _is_port_busy_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        keywords = (
+            "permissionerror",
+            "access is denied",
+            "resource busy",
+            "device or resource busy",
+            "could not exclusively lock port",
+        )
+        return any(keyword in text for keyword in keywords)
+
+    def _classify_port_open_error(self, exc: Exception) -> PortOpenError:
+        message_prefix = (
+            f"CLI={self.config.cli_port}/{self.config.cli_baud}, "
+            f"DATA={self.config.data_port}/{self.config.data_baud}"
+        )
+        if self._is_port_busy_error(exc):
+            return PortBusyError(f"【port 被占用】{message_prefix} | 原因：{exc}")
+        return PortOpenError(f"【port 打不開】{message_prefix} | 原因：{exc}")
+
+    @staticmethod
+    def _is_successful_response(response: str) -> bool:
+        lowered = response.lower()
+        return bool(response) and "error" not in lowered and "fail" not in lowered
 
     def send_cfg_file(self, cfg_path: Optional[str] = None) -> List[str]:
         """
@@ -351,6 +395,8 @@ class SerialManager:
 
         logs: List[str] = []
 
+        critical_commands = {"sensorStop", "flushCfg", "sensorStart"}
+
         with path.open("r", encoding="utf-8", errors="ignore") as file:
             for raw_line in file:
                 line = raw_line.strip()
@@ -359,14 +405,47 @@ class SerialManager:
                 if not line or line.startswith("%"):
                     continue
 
-                response = self.send_cli_command(
-                    line,
-                    read_response=True,
-                    response_wait_s=self.config.command_delay_s,
-                )
+                command_name = line.split(maxsplit=1)[0]
+                if command_name in critical_commands:
+                    success = False
+                    last_error: Optional[Exception] = None
+                    for attempt, backoff_s in enumerate(self.config.retry_backoff_s, start=1):
+                        try:
+                            response = self.send_cli_command(
+                                line,
+                                read_response=True,
+                                response_wait_s=self.config.command_delay_s,
+                            )
+                            if not self._is_successful_response(response):
+                                raise ResponseTimeoutError(
+                                    f"【回應超時】關鍵命令回覆異常：{line} | 回傳: {response}"
+                                )
+                            logs.append(
+                                f"[關鍵命令] 傳送成功: {line} | 嘗試次數: {attempt} | 回傳: {response}"
+                            )
+                            success = True
+                            break
+                        except ResponseTimeoutError as exc:
+                            last_error = exc
+                            logs.append(
+                                f"[關鍵命令] 失敗: {line} | 嘗試: {attempt}/{len(self.config.retry_backoff_s)} "
+                                f"| 類型: 回應超時 | 原因: {exc}"
+                            )
+                            if attempt < len(self.config.retry_backoff_s):
+                                time.sleep(backoff_s)
 
-                log_text = f"傳送: {line} | 回傳: {response}"
-                logs.append(log_text)
+                    if not success:
+                        assert last_error is not None
+                        raise ResponseTimeoutError(
+                            f"【回應超時】關鍵命令重試仍失敗：{line}"
+                        ) from last_error
+                else:
+                    response = self.send_cli_command(
+                        line,
+                        read_response=True,
+                        response_wait_s=self.config.command_delay_s,
+                    )
+                    logs.append(f"傳送: {line} | 回傳: {response}")
 
                 # 某些命令之間留一點時間，比較不容易太快把設備塞爆。
                 time.sleep(self.config.command_delay_s)
