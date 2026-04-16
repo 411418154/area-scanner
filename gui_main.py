@@ -38,6 +38,7 @@ gui_main.py
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import Optional
 import time
@@ -69,6 +70,9 @@ from PySide6.QtWidgets import (
 from parser_as import AreaScannerParser, ParsedFrame, parse_packet
 from serial_manager import PortInfo, SerialConfig, SerialManager, SerialManagerError
 from visualizer_3d import AreaScanner3DWidget
+
+STATE_SCHEMA_VERSION = 1
+STATE_FILE_PATH = Path.home() / ".area_scanner_state.json"
 
 
 # ==========================================================
@@ -111,6 +115,24 @@ class RuntimeConfig:
     fov_inner_range_m: float = 2.1
 
     view_mode: str = "X-Y View"
+
+    def to_dict(self) -> dict:
+        """序列化成可寫入 JSON 的 dict。"""
+        return dict(self.__dict__)
+
+    @classmethod
+    def from_dict(cls, payload: dict) -> "RuntimeConfig":
+        """
+        由 dict 建立 RuntimeConfig。
+
+        未知欄位會忽略、缺少欄位會使用 dataclass 預設值，
+        這樣 schema 未來變更時可平滑升級。
+        """
+        defaults = cls()
+        for key, value in payload.items():
+            if hasattr(defaults, key):
+                setattr(defaults, key, value)
+        return defaults
 
     def to_serial_config(self) -> SerialConfig:
         """只把 serial 層需要的欄位轉成 SerialConfig。"""
@@ -265,6 +287,7 @@ class AreaScannerMainWindow(QMainWindow):
         self._build_status_bar()
         self._build_central_ui()
         self._connect_signals()
+        self.load_state()
         self._apply_default_values()
         self.refresh_ports()
         self._apply_viewer_config()
@@ -619,6 +642,80 @@ class AreaScannerMainWindow(QMainWindow):
             inner_range_m=self.config.fov_inner_range_m,
         )
 
+    def load_state(self) -> None:
+        """
+        載入上次 GUI 狀態。
+
+        若 state JSON 損毀或格式不合法，會回退到預設值並寫入 log。
+        """
+        if not STATE_FILE_PATH.exists():
+            return
+
+        try:
+            raw = json.loads(STATE_FILE_PATH.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            self.config = RuntimeConfig()
+            self.append_log(f"[State] 狀態檔 JSON 損毀，已回退預設值：{exc}")
+            return
+        except Exception as exc:
+            self.config = RuntimeConfig()
+            self.append_log(f"[State] 讀取狀態檔失敗，已回退預設值：{exc}")
+            return
+
+        try:
+            migrated = self._migrate_state(raw)
+            self.config = RuntimeConfig.from_dict(migrated.get("config", {}))
+            self.append_log(f"[State] 已載入狀態檔：{STATE_FILE_PATH}")
+        except Exception as exc:
+            self.config = RuntimeConfig()
+            self.append_log(f"[State] 狀態檔格式不正確，已回退預設值：{exc}")
+
+    def save_state(self) -> None:
+        """保存目前 GUI 狀態。"""
+        self._sync_widgets_to_config()
+
+        payload = {
+            "schema_version": STATE_SCHEMA_VERSION,
+            "config": self.config.to_dict(),
+        }
+        try:
+            STATE_FILE_PATH.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self.append_log(f"[State] 已保存狀態檔：{STATE_FILE_PATH}")
+        except Exception as exc:
+            self.append_log(f"[State] 保存狀態檔失敗：{exc}")
+
+    def _migrate_state(self, raw_state: dict) -> dict:
+        """
+        升級舊版 state 到目前 schema。
+
+        - v0（沒有 schema_version）視為舊格式，內容即為 config 欄位。
+        - v1 起使用 {"schema_version": 1, "config": {...}}。
+        """
+        if not isinstance(raw_state, dict):
+            raise ValueError("state 根物件必須是 JSON object。")
+
+        version = raw_state.get("schema_version", 0)
+
+        # v0：舊格式，直接把 root 視為 config。
+        if version == 0:
+            return {"schema_version": STATE_SCHEMA_VERSION, "config": raw_state}
+
+        if version > STATE_SCHEMA_VERSION:
+            self.append_log(
+                f"[State] 偵測到較新 schema_version={version}，將盡力相容讀取。"
+            )
+            return raw_state
+
+        if version == 1:
+            if "config" not in raw_state or not isinstance(raw_state["config"], dict):
+                raise ValueError("state 缺少 config 欄位或型別錯誤。")
+            return raw_state
+
+        raise ValueError(f"不支援的 schema_version={version}")
+
     # ------------------------------------------------------
     # E. 使用者操作
     # ------------------------------------------------------
@@ -807,6 +904,7 @@ class AreaScannerMainWindow(QMainWindow):
     # ------------------------------------------------------
     def closeEvent(self, event) -> None:  # type: ignore[override]
         try:
+            self.save_state()
             self.stop_worker()
         finally:
             event.accept()
