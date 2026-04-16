@@ -309,10 +309,9 @@ class AreaScanner3DWidget(QWidget):
 
     def set_mount_config(self, mounting_height_m: float, elevation_tilt_deg: float) -> None:
         """
-        先把 mount / tilt 設定記住。
+        更新雷達安裝高度與仰角。
 
-        這一版還沒有把它實際反映到點位座標，
-        但先留好介面，後面比較好擴充。
+        這些參數會在 _normalize_frame 內用於雷達座標 -> 世界座標補償。
         """
         self._mounting_height_m = mounting_height_m
         self._elevation_tilt_deg = elevation_tilt_deg
@@ -442,25 +441,31 @@ class AreaScanner3DWidget(QWidget):
     def _normalize_frame(self, frame) -> dict:
         """
         把 ParsedFrame / dict 轉成統一格式，方便後面統一處理。
+
+        注意：這裡會先把雷達座標轉成世界座標（含 pitch/高度補償），
+        後續 _project_points / _project_targets 都直接吃補償後座標。
         """
         # 先處理 parser_as.ParsedFrame
         if hasattr(frame, "header"):
             dynamic_points = []
             for p in getattr(frame, "dynamic_points", []):
-                dynamic_points.append((float(p.x), float(p.y), float(p.z)))
+                xw, yw, zw = self._transform_radar_to_world(float(p.x), float(p.y), float(p.z))
+                dynamic_points.append((xw, yw, zw))
 
             static_points = []
             for p in getattr(frame, "static_points", []):
-                static_points.append((float(p.x), float(p.y), float(p.z)))
+                xw, yw, zw = self._transform_radar_to_world(float(p.x), float(p.y), float(p.z))
+                static_points.append((xw, yw, zw))
 
             targets = []
             for t in getattr(frame, "targets", []):
+                xw, yw, zw = self._transform_radar_to_world(float(t.pos_x), float(t.pos_y), float(t.pos_z))
                 targets.append(
                     {
                         "tid": int(t.tid),
-                        "x": float(t.pos_x),
-                        "y": float(t.pos_y),
-                        "z": float(t.pos_z),
+                        "x": xw,
+                        "y": yw,
+                        "z": zw,
                         "vel_x": float(t.vel_x),
                         "vel_y": float(t.vel_y),
                         "vel_z": float(t.vel_z),
@@ -476,12 +481,61 @@ class AreaScanner3DWidget(QWidget):
 
         # 再處理 dict
         frame_dict = dict(frame)
+
+        dynamic_points = []
+        for p in frame_dict.get("dynamic_points", []):
+            if len(p) < 3:
+                continue
+            xw, yw, zw = self._transform_radar_to_world(float(p[0]), float(p[1]), float(p[2]))
+            dynamic_points.append((xw, yw, zw))
+
+        static_points = []
+        for p in frame_dict.get("static_points", []):
+            if len(p) < 3:
+                continue
+            xw, yw, zw = self._transform_radar_to_world(float(p[0]), float(p[1]), float(p[2]))
+            static_points.append((xw, yw, zw))
+
+        targets = []
+        for t in frame_dict.get("tracked_targets", []):
+            xw, yw, zw = self._transform_radar_to_world(
+                float(t.get("x", 0.0)),
+                float(t.get("y", 0.0)),
+                float(t.get("z", 0.0)),
+            )
+            target = dict(t)
+            target["x"] = xw
+            target["y"] = yw
+            target["z"] = zw
+            targets.append(target)
+
         return {
             "frame_number": int(frame_dict.get("frame_number", 0)),
-            "dynamic_points": list(frame_dict.get("dynamic_points", [])),
-            "static_points": list(frame_dict.get("static_points", [])),
-            "targets": list(frame_dict.get("tracked_targets", [])),
+            "dynamic_points": dynamic_points,
+            "static_points": static_points,
+            "targets": targets,
         }
+
+    def _transform_radar_to_world(self, x: float, y: float, z: float) -> tuple[float, float, float]:
+        """
+        將雷達座標轉到世界座標。
+
+        座標系定義：
+        - 雷達座標：x 向右、y 向前、z 向上。
+        - 安裝傾角：繞 X 軸旋轉（右手定則，正角讓 y 軸朝 +z 方向抬升）。
+        - 安裝高度：旋轉後再做世界座標 z 方向平移（+mounting_height）。
+        """
+        tilt_rad = math.radians(self._elevation_tilt_deg)
+        cos_tilt = math.cos(tilt_rad)
+        sin_tilt = math.sin(tilt_rad)
+
+        # X 軸旋轉：x 不變，(y, z) 進行 2D 旋轉。
+        xr = x
+        yr = y * cos_tilt - z * sin_tilt
+        zr = y * sin_tilt + z * cos_tilt
+
+        # 旋轉後再補償雷達離地高度。
+        return xr, yr, zr + self._mounting_height_m
 
     def _project_points(self, points: Iterable[Sequence[float]]) -> list[tuple[float, float]]:
         """
