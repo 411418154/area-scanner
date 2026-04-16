@@ -62,6 +62,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QSpinBox,
     QStatusBar,
+    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -329,15 +330,44 @@ class AreaScannerMainWindow(QMainWindow):
         root = QWidget(self)
         self.setCentralWidget(root)
 
-        root_layout = QHBoxLayout(root)
+        root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(10, 10, 10, 10)
         root_layout.setSpacing(10)
 
-        left = self._build_left_panel()
-        right = self._build_right_panel()
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_settings_tab(), "設定")
+        self.tabs.addTab(self._build_monitor_tab(), "即時監控")
+        self.tabs.addTab(self._build_diagnostics_tab(), "診斷")
+        root_layout.addWidget(self.tabs, 1)
 
-        root_layout.addWidget(left, 0)
-        root_layout.addWidget(right, 1)
+    def _build_settings_tab(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(10)
+        layout.addWidget(self._create_serial_group())
+        layout.addWidget(self._create_cfg_group())
+        layout.addWidget(self._create_sensor_group())
+        layout.addWidget(self._create_zone_group())
+        layout.addStretch(1)
+        return panel
+
+    def _build_monitor_tab(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(10)
+        layout.addWidget(self._create_viewer_group(), 5)
+        layout.addWidget(self._create_stats_group(), 1)
+        layout.addWidget(self._create_run_group())
+        return panel
+
+    def _build_diagnostics_tab(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(10)
+        layout.addWidget(self._create_log_group(), 2)
+        layout.addWidget(self._create_parse_warning_group(), 1)
+        layout.addWidget(self._create_export_group())
+        return panel
 
     # ------------------------------------------------------
     # B. 左側控制面板
@@ -546,6 +576,24 @@ class AreaScannerMainWindow(QMainWindow):
         layout.addWidget(self.text_log)
         return group
 
+    def _create_parse_warning_group(self) -> QGroupBox:
+        group = QGroupBox("Parse Warnings")
+        layout = QVBoxLayout(group)
+
+        self.text_parse_warnings = QPlainTextEdit()
+        self.text_parse_warnings.setReadOnly(True)
+        self.text_parse_warnings.setLineWrapMode(QPlainTextEdit.NoWrap)
+        layout.addWidget(self.text_parse_warnings)
+        return group
+
+    def _create_export_group(self) -> QGroupBox:
+        group = QGroupBox("Diagnostics Export")
+        layout = QHBoxLayout(group)
+        self.btn_export_diagnostics = QPushButton("匯出診斷紀錄")
+        layout.addWidget(self.btn_export_diagnostics)
+        layout.addStretch(1)
+        return group
+
     # ------------------------------------------------------
     # D. 訊號連接與初始值
     # ------------------------------------------------------
@@ -561,6 +609,7 @@ class AreaScannerMainWindow(QMainWindow):
         self.btn_test_connection.clicked.connect(self.test_connection)
         self.btn_start.clicked.connect(self.start_worker)
         self.btn_stop.clicked.connect(self.stop_worker)
+        self.btn_export_diagnostics.clicked.connect(self.export_diagnostics)
 
         self.combo_view_mode.currentTextChanged.connect(self.on_view_mode_changed)
         self.check_enable_zone.toggled.connect(self._apply_viewer_config)
@@ -873,7 +922,34 @@ class AreaScannerMainWindow(QMainWindow):
 
     def append_log(self, text: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
-        self.text_log.appendPlainText(f"[{timestamp}] {text}")
+        line = f"[{timestamp}] {text}"
+        self.text_log.appendPlainText(line)
+        if "[解析警告]" in text:
+            self.text_parse_warnings.appendPlainText(line)
+
+    def export_diagnostics(self) -> None:
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "匯出診斷紀錄",
+            str(Path.home() / "area_scanner_diagnostics.log"),
+            "Log Files (*.log);;Text Files (*.txt);;All Files (*.*)",
+        )
+        if not file_path:
+            return
+
+        payload = [
+            "=== Log Output ===",
+            self.text_log.toPlainText(),
+            "",
+            "=== Parse Warnings ===",
+            self.text_parse_warnings.toPlainText(),
+        ]
+        try:
+            Path(file_path).write_text("\n".join(payload), encoding="utf-8")
+            self.append_log(f"[診斷] 已匯出診斷紀錄：{file_path}")
+        except Exception as exc:
+            self.append_log(f"[診斷] 匯出失敗：{exc}")
+            QMessageBox.warning(self, "Export Diagnostics", str(exc))
 
     def on_new_frame(self, frame: ParsedFrame) -> None:
         """收到新 frame 後更新 viewer 與 stats。"""
