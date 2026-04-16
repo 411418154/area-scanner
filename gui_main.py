@@ -105,6 +105,10 @@ class RuntimeConfig:
     warn_start_m: float = 2.0
     warn_end_m: float = 4.0
     projection_time_s: float = 2.0
+    fov_outer_angle_deg: float = 59.0
+    fov_inner_angle_deg: float = 30.0
+    fov_outer_range_m: float = 7.2
+    fov_inner_range_m: float = 2.1
 
     view_mode: str = "X-Y View"
 
@@ -422,6 +426,22 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_projection_time.setRange(0.0, 20.0)
         self.spin_projection_time.setDecimals(2)
 
+        self.spin_fov_outer_angle = QDoubleSpinBox()
+        self.spin_fov_outer_angle.setRange(0.0, 89.9)
+        self.spin_fov_outer_angle.setDecimals(2)
+
+        self.spin_fov_inner_angle = QDoubleSpinBox()
+        self.spin_fov_inner_angle.setRange(0.0, 89.9)
+        self.spin_fov_inner_angle.setDecimals(2)
+
+        self.spin_fov_outer_range = QDoubleSpinBox()
+        self.spin_fov_outer_range.setRange(0.0, 100.0)
+        self.spin_fov_outer_range.setDecimals(2)
+
+        self.spin_fov_inner_range = QDoubleSpinBox()
+        self.spin_fov_inner_range.setRange(0.0, 100.0)
+        self.spin_fov_inner_range.setDecimals(2)
+
         layout.addRow("View Mode", self.combo_view_mode)
         layout.addRow(self.check_enable_zone)
         layout.addRow("Critical Start (m)", self.spin_critical_start)
@@ -429,6 +449,10 @@ class AreaScannerMainWindow(QMainWindow):
         layout.addRow("Warn Start (m)", self.spin_warn_start)
         layout.addRow("Warn End (m)", self.spin_warn_end)
         layout.addRow("Projection Time (s)", self.spin_projection_time)
+        layout.addRow("FOV Outer Angle (deg)", self.spin_fov_outer_angle)
+        layout.addRow("FOV Inner Angle (deg)", self.spin_fov_inner_angle)
+        layout.addRow("FOV Outer Range (m)", self.spin_fov_outer_range)
+        layout.addRow("FOV Inner Range (m)", self.spin_fov_inner_range)
         return group
 
     def _create_run_group(self) -> QGroupBox:
@@ -524,6 +548,10 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_projection_time.valueChanged.connect(self._apply_viewer_config)
         self.spin_mounting_height.valueChanged.connect(self._apply_viewer_config)
         self.spin_elevation_tilt.valueChanged.connect(self._apply_viewer_config)
+        self.spin_fov_outer_angle.valueChanged.connect(self._apply_viewer_config)
+        self.spin_fov_inner_angle.valueChanged.connect(self._apply_viewer_config)
+        self.spin_fov_outer_range.valueChanged.connect(self._apply_viewer_config)
+        self.spin_fov_inner_range.valueChanged.connect(self._apply_viewer_config)
 
     def _apply_default_values(self) -> None:
         self.spin_cli_baud.setValue(self.config.cli_baud)
@@ -539,6 +567,10 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_warn_start.setValue(self.config.warn_start_m)
         self.spin_warn_end.setValue(self.config.warn_end_m)
         self.spin_projection_time.setValue(self.config.projection_time_s)
+        self.spin_fov_outer_angle.setValue(self.config.fov_outer_angle_deg)
+        self.spin_fov_inner_angle.setValue(self.config.fov_inner_angle_deg)
+        self.spin_fov_outer_range.setValue(self.config.fov_outer_range_m)
+        self.spin_fov_inner_range.setValue(self.config.fov_inner_range_m)
 
         self.combo_view_mode.setCurrentText(self.config.view_mode)
 
@@ -558,6 +590,10 @@ class AreaScannerMainWindow(QMainWindow):
         self.config.warn_start_m = float(self.spin_warn_start.value())
         self.config.warn_end_m = float(self.spin_warn_end.value())
         self.config.projection_time_s = float(self.spin_projection_time.value())
+        self.config.fov_outer_angle_deg = float(self.spin_fov_outer_angle.value())
+        self.config.fov_inner_angle_deg = float(self.spin_fov_inner_angle.value())
+        self.config.fov_outer_range_m = float(self.spin_fov_outer_range.value())
+        self.config.fov_inner_range_m = float(self.spin_fov_inner_range.value())
         self.config.view_mode = self.combo_view_mode.currentText()
 
     def _apply_viewer_config(self) -> None:
@@ -575,6 +611,12 @@ class AreaScannerMainWindow(QMainWindow):
         self.viewer.set_mount_config(
             mounting_height_m=self.config.mounting_height_m,
             elevation_tilt_deg=self.config.elevation_tilt_deg,
+        )
+        self.viewer.set_fov_config(
+            outer_angle_deg=self.config.fov_outer_angle_deg,
+            inner_angle_deg=self.config.fov_inner_angle_deg,
+            outer_range_m=self.config.fov_outer_range_m,
+            inner_range_m=self.config.fov_inner_range_m,
         )
 
     # ------------------------------------------------------

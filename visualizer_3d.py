@@ -144,6 +144,10 @@ class AreaScanner3DWidget(QWidget):
         self._warn_start_m = 2.0
         self._warn_end_m = 4.0
         self._projection_time_s = 2.0
+        self._fov_outer_angle_deg = 59.0
+        self._fov_inner_angle_deg = 30.0
+        self._fov_outer_range_m = 7.2
+        self._fov_inner_range_m = 2.1
 
         # 這兩個先保留，未來若要做高度補償 / tilt 修正可再接。
         self._mounting_height_m = 2.0
@@ -316,6 +320,20 @@ class AreaScanner3DWidget(QWidget):
         self._mounting_height_m = mounting_height_m
         self._elevation_tilt_deg = elevation_tilt_deg
 
+    def set_fov_config(
+        self,
+        outer_angle_deg: float,
+        inner_angle_deg: float,
+        outer_range_m: float,
+        inner_range_m: float,
+    ) -> None:
+        """由 gui_main.py 同步 FOV 角度與範圍設定。"""
+        self._fov_outer_angle_deg = max(0.0, outer_angle_deg)
+        self._fov_inner_angle_deg = min(self._fov_outer_angle_deg, max(0.0, inner_angle_deg))
+        self._fov_outer_range_m = max(0.0, outer_range_m)
+        self._fov_inner_range_m = min(self._fov_outer_range_m, max(0.0, inner_range_m))
+        self._refresh_background_layers()
+
     # ------------------------------------------------------
     # 4. 對外公開：用 frame 更新畫面
     # ------------------------------------------------------
@@ -425,10 +443,10 @@ class AreaScanner3DWidget(QWidget):
 
         # FOV 線：角度先抓成接近圖片的外觀
         # 這裡的角度是相對 Y 軸展開的角度。
-        outer_angle_deg = 59.0
-        inner_angle_deg = 30.0
-        outer_y_end = 7.2
-        inner_y_end = 2.1
+        outer_angle_deg = self._fov_outer_angle_deg
+        inner_angle_deg = self._fov_inner_angle_deg
+        outer_y_end = self._fov_outer_range_m
+        inner_y_end = self._fov_inner_range_m
 
         self.item_fov_left.setData(*self._ray_from_origin(-outer_angle_deg, outer_y_end))
         self.item_fov_right.setData(*self._ray_from_origin(+outer_angle_deg, outer_y_end))
