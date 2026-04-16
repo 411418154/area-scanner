@@ -101,8 +101,8 @@ class ViewerStyle:
     projection_pen: str = "#ffff00"    # 黃色投影線
 
     # 區域顏色
-    warn_brush: tuple = (128, 128, 0, 130)     # 橄欖黃半透明
-    crit_brush: tuple = (110, 0, 0, 170)       # 深紅半透明
+    warn_brush: tuple = (128, 128, 0, 120)     # 橄欖黃半透明
+    crit_brush: tuple = (110, 0, 0, 130)       # 深紅半透明
     zone_edge_pen: str = "#ffffff"
     fov_pen: str = "#d9d9d9"
 
@@ -209,13 +209,13 @@ class AreaScanner3DWidget(QWidget):
         # Warning / Critical 半圓區域
         self.item_warn_zone = self.plot.plot(
             [], [],
-            pen=pg.mkPen(self.style.zone_edge_pen, width=1.0),
+            pen=pg.mkPen(self.style.zone_edge_pen, width=0.9),
             fillLevel=0.0,
             brush=pg.mkBrush(*self.style.warn_brush),
         )
         self.item_crit_zone = self.plot.plot(
             [], [],
-            pen=pg.mkPen(self.style.zone_edge_pen, width=1.0),
+            pen=pg.mkPen(self.style.zone_edge_pen, width=0.9),
             fillLevel=0.0,
             brush=pg.mkBrush(*self.style.crit_brush),
         )
@@ -427,16 +427,16 @@ class AreaScanner3DWidget(QWidget):
             self.item_fov_inner_right.setData([], [])
             return
 
-        # 畫外圈 warning 半圓
+        # 畫外圈 warning 環形扇區（warn_start ~ warn_end）
         if self._enable_zones and self._warn_end_m > 0:
-            x_warn, y_warn = self._semi_circle(self._warn_end_m)
+            x_warn, y_warn = self._ring_sector_polygon(self._warn_start_m, self._warn_end_m)
             self.item_warn_zone.setData(x_warn, y_warn)
         else:
             self.item_warn_zone.setData([], [])
 
-        # 畫內圈 critical 半圓
+        # 畫內圈 critical 環形扇區（critical_start ~ critical_end）
         if self._enable_zones and self._critical_end_m > 0:
-            x_crit, y_crit = self._semi_circle(self._critical_end_m)
+            x_crit, y_crit = self._ring_sector_polygon(self._critical_start_m, self._critical_end_m)
             self.item_crit_zone.setData(x_crit, y_crit)
         else:
             self.item_crit_zone.setData([], [])
@@ -728,6 +728,45 @@ class AreaScanner3DWidget(QWidget):
         x = radius * np.cos(theta)
         y = radius * np.sin(theta)
         return x, y
+
+    def _ring_sector_polygon(
+        self,
+        r_inner: float,
+        r_outer: float,
+        half_angle_deg: float = 90.0,
+        n: int = 181,
+    ) -> tuple[list[float], list[float]]:
+        """
+        產生以 +Y 軸為中心展開的環形扇區 polygon，可直接給 PlotDataItem.setData(x, y)。
+        """
+        assert np is not None
+
+        # 最後一道防呆，避免 GUI 輸入或資料同步誤差造成奇怪形狀。
+        r_inner = max(0.0, float(r_inner))
+        r_outer = max(r_inner, float(r_outer))
+        if r_outer <= 0.0 or r_outer <= r_inner:
+            return [], []
+
+        num_points = max(3, int(n))
+        theta = np.linspace(-float(half_angle_deg), float(half_angle_deg), num_points)
+        theta_rad = np.deg2rad(theta)
+
+        # 外弧：由左到右（相對 +Y 軸）
+        x_outer = r_outer * np.sin(theta_rad)
+        y_outer = r_outer * np.cos(theta_rad)
+
+        # 內弧：反向由右到左回來，構成封閉環形區域
+        theta_rev_rad = theta_rad[::-1]
+        x_inner = r_inner * np.sin(theta_rev_rad)
+        y_inner = r_inner * np.cos(theta_rev_rad)
+
+        x_poly = np.concatenate([x_outer, x_inner])
+        y_poly = np.concatenate([y_outer, y_inner])
+
+        # 額外補首點，確保視覺上是封閉 polygon。
+        x_poly = np.append(x_poly, x_poly[0])
+        y_poly = np.append(y_poly, y_poly[0])
+        return x_poly.tolist(), y_poly.tolist()
 
     @staticmethod
     def _ray_from_origin(angle_from_y_deg: float, y_end: float):
