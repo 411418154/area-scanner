@@ -226,7 +226,7 @@ python AreaScanner_Target_Diagnose_fixed.py
 
 ---
 
-## 📘 適合老師快速理解的一句話
+## 📘 適合快速理解的一句話
 
 > 這個專案的核心，是將 TI Area Scanner 雷達輸出的 TLV 封包資料，透過 Python 完成接收、解析與 GUI 視覺化顯示，作為接近官方監控介面的展示系統。
 
