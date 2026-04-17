@@ -2,7 +2,6 @@
 
 <p align="center">
   <b>TI mmWave Area Scanner Python GUI 專案說明</b><br>
-  <sub>提供給指導老師閱讀的簡明版本</sub>
 </p>
 
 ---
@@ -243,5 +242,4 @@ python AreaScanner_Target_Diagnose_fixed.py
 
 <p align="center">
   <b>TI Area Scanner Python GUI</b><br>
-  <sub>簡潔、易懂、適合教學與展示的說明版本</sub>
 </p>
