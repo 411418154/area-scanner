@@ -1,174 +1,79 @@
-# Area Scanner Python Visualizer
+# 📡 Area Scanner（Boss 分支）
 
-> `Boss` branch 的 Python 版 TI Area Scanner GUI  
-> 把 **雷達連線、TLV 封包解析、目標顯示、診斷工具** 整合成一個比較好操作、也比較接近 MATLAB Area Scanner 畫面的專案。
-
----
-
-## 專案定位
-
-這個版本不只是把視窗打開而已，而是已經把主要流程串起來：
-
-```text
-選擇 COM Port -> 載入 cfg -> 傳送設定 -> 接收 DATA Port -> 解析 TLV -> 顯示點雲 / 目標 / 區域
-```
-
-如果要一句話介紹這個專案：
-
-> 這是一個用 Python 製作的 TI Area Scanner GUI，能接收雷達資料、解析 TLV 封包，並把動態點、靜態點與追蹤目標顯示在接近 MATLAB 風格的畫面上。
+<p align="center">
+  <b>TI mmWave Area Scanner Python GUI 專案說明</b><br>
+  <sub>提供給指導老師閱讀的簡明版本</sub>
+</p>
 
 ---
 
-## 你可以用它做什麼
+## ✨ 專案簡介
 
-| 用途 | 說明 |
-|---|---|
-| 專題展示 | 用 GUI 呈現雷達資料流與目標顯示結果 |
-| 課堂報告 | 跟老師說明 Python 版 Area Scanner 的架構與流程 |
-| TLV 解析研究 | 觀察封包 header、TLV type、dynamic/static/target 資料 |
-| GUI 比較 | 比對 MATLAB GUI 和 Python GUI 的差異 |
-| 除錯診斷 | 用診斷工具確認 target 沒出現是資料問題還是顯示問題 |
+本專案是 **TI Area Scanner** 的 Python 版本圖形介面程式，
+主要用途是將毫米波雷達輸出的 **TLV 封包資料** 即時接收、解析，並顯示成接近官方 MATLAB Area Scanner 的視覺化畫面。
 
----
+這個版本的重點不是只有開啟視窗，而是把整體流程串接完成：
 
-## 主要特色
-
-### 1. GUI 控制流程完整
-- 可以選擇 **CLI Port / DATA Port**
-- 可以載入 **`.cfg` 設定檔**
-- 可以先做 **Test Connection**
-- 可以用 **Start / Stop** 控制接收流程
-
-### 2. 有自己的 TLV 解析器
-- 會找 **Magic Word**
-- 會拆出完整 packet
-- 會解析 **frame header**
-- 會解析 **TLV type 1 ~ 11**
-- 會把資料整理成 GUI 可直接使用的結構
-
-### 3. 視覺化接近 MATLAB Area Scanner 風格
-- 黑底顯示
-- X-Y View 為主
-- 顯示 **Dynamic / Static / Tracked Target**
-- 顯示 **Warning / Critical 區域**
-- 顯示 **FOV 線**
-- 顯示 **projection line（預判線）**
-
-### 4. 內建診斷能力
-- 可觀察目前 packet 裡有沒有 **TLV type 10**
-- 可分辨是：
-  - 沒收到 target TLV
-  - tracker 還沒產生穩定目標
-  - GUI 顯示層有問題
+- 讀取 **CLI Port / DATA Port**
+- 載入 **`.cfg` 設定檔`**
+- 將設定送到雷達
+- 持續接收 **TLV 二進位資料**
+- 解析封包中的點雲與追蹤目標
+- 顯示為接近官方風格的 **X-Y 視覺化介面**
 
 ---
 
-## 專案架構圖
+## 🎯 專案重點
+
+<table>
+<tr>
+<td width="33%" align="center">
+
+### 🖥️ 圖形介面
+提供設定頁、即時監控頁、診斷頁，
+方便查看連線、資料與畫面結果。
+
+</td>
+<td width="33%" align="center">
+
+### 🧩 TLV 封包解析
+將雷達輸出的二進位封包拆解成
+Dynamic / Static / Target 等資料。
+
+</td>
+<td width="33%" align="center">
+
+### 📈 即時視覺化
+將解析後的結果顯示為
+接近 MATLAB 的 X-Y 監控畫面。
+
+</td>
+</tr>
+</table>
+
+---
+
+## 🏗️ 系統流程
 
 ```mermaid
 flowchart LR
-    A[mmWave Radar] --> B[serial_manager.py]
-    B --> C[parser_as.py]
-    C --> D[gui_main.py]
-    D --> E[visualizer_3d.py]
-    C --> F[AreaScanner_Target_Diagnose_fixed.py]
+    A[雷達裝置] --> B[Serial 通訊]
+    B --> C[讀取 DATA Port]
+    C --> D[TLV 封包解析]
+    D --> E[點雲 / 目標資料]
+    E --> F[GUI 視覺化顯示]
 ```
 
-### 白話版理解
-- `serial_manager.py`：負責和雷達通訊
-- `parser_as.py`：負責把原始 bytes 解析成結構化資料
-- `gui_main.py`：負責整體操作流程與介面控制
-- `visualizer_3d.py`：負責把資料畫成畫面
-- `AreaScanner_Target_Diagnose_fixed.py`：負責查 target 為什麼沒出現
+### 簡單說明
+
+1. **雷達輸出資料**：雷達會透過序列埠送出封包資料。  
+2. **Python 接收資料**：程式透過 CLI Port 與 DATA Port 和雷達溝通。  
+3. **解析 TLV 封包**：把封包拆成不同型別的資料內容。  
+4. **畫面更新**：將解析結果顯示在 GUI 中。  
 
 ---
 
-## 環境需求
-
-### Python 版本
-建議使用：
-
-```text
-Python 3.10.x
-```
-
-### 需要安裝的套件
-
-```bash
-python -m pip install PySide6 pyqtgraph pyserial numpy
-```
-
-### 套件用途對照
-
-| 套件 | 用途 |
-|---|---|
-| `PySide6` | 建立 GUI 介面 |
-| `pyqtgraph` | 畫 2D / 3D 顯示畫面 |
-| `pyserial` | 與 CLI Port / DATA Port 通訊 |
-| `numpy` | 點位、投影、座標與數值計算 |
-
----
-
-## 快速開始
-
-### 1. 下載專案
-
-```bash
-git clone -b Boss https://github.com/411418154/area-scanner.git
-cd area-scanner
-```
-
-### 2. 安裝套件
-
-```bash
-python -m pip install PySide6 pyqtgraph pyserial numpy
-```
-
-### 3. 啟動 GUI
-
-```bash
-python main.py
-```
-
-### 4. GUI 操作流程
-
-```text
-Refresh Ports
--> 選擇 CLI / DATA Port
--> 載入 .cfg
--> Test Connection
--> Start
-```
-
----
-
-## 介面操作建議
-
-### Step 1：重新整理 COM Port
-先按 `Refresh Ports`，確認目前電腦看到哪些序列埠。
-
-### Step 2：選擇 CLI / DATA Port
-常見設定：
-- CLI Port：`115200`
-- DATA Port：`921600`
-
-### Step 3：載入 `.cfg`
-從 GUI 選擇對應的 TI Area Scanner 設定檔。
-
-### Step 4：先做 Test Connection
-先測試基本連線是否正常，再按 Start，會比較容易排除問題。
-
-### Step 5：開始接收
-按 `Start` 後，程式會：
-- 開啟 serial
-- 傳送 cfg
-- 持續接收 DATA Port
-- 解析 packet
-- 更新畫面與統計資訊
-
----
-
-## 檔案結構
+## 🧠 程式架構
 
 ```text
 area-scanner/
@@ -180,232 +85,163 @@ area-scanner/
 └─ AreaScanner_Target_Diagnose_fixed.py
 ```
 
----
+### 各檔案功能
 
-## 各檔案功能說明
-
-### `main.py`
-**主程式入口**。
-
-負責：
-- 建立 `QApplication`
-- 啟動主視窗 `AreaScannerMainWindow`
-- 檢查基本 GUI 套件是否可用
-
-一句話理解：
-> 整個程式從這裡開始執行。
+| 檔案名稱 | 功能說明 |
+|---|---|
+| `main.py` | 程式入口，負責啟動整個 GUI。 |
+| `gui_main.py` | 主視窗與操作流程控制，包含設定、執行、停止、顯示狀態。 |
+| `serial_manager.py` | 管理 CLI Port / DATA Port，負責送出 cfg 與接收序列資料。 |
+| `parser_as.py` | 解析 TLV 封包，拆出點雲、side info、target list 等資料。 |
+| `visualizer_3d.py` | 顯示視覺化畫面，包含 X-Y View、警戒區、FOV 線、目標投影線。 |
+| `AreaScanner_Target_Diagnose_fixed.py` | 診斷工具，用來確認資料流中是否真的有 target 資訊。 |
 
 ---
 
-### `gui_main.py`
-**GUI 主視窗與流程控制核心**。
+## 🖼️ 畫面特色
 
-負責：
-- 建立設定 / 即時監控 / 診斷分頁
-- 選擇 COM Port
-- 載入 cfg
-- 測試連線
-- 啟動背景執行緒接收雷達資料
-- 更新 viewer 與統計資訊
-- 顯示 log 與 parse warnings
-- 匯出診斷紀錄
+此版本視覺化畫面的設計方向，是盡量接近 TI 官方 Area Scanner 常見的監控風格：
 
-一句話理解：
-> 它是整個 Python Area Scanner 的控制中心。
+- 黑色背景
+- X / Y 座標軸
+- FOV 視野線
+- Warning / Critical 區域
+- Dynamic point / Static point / Tracked target 顯示
+- Target projection line（預測移動線）
+- 左上角 frame 資訊顯示
 
----
+### 顯示資料類型
 
-### `serial_manager.py`
-**序列埠通訊層**。
-
-負責：
-- 列出可用 COM Port
-- 開啟 / 關閉 CLI Port 與 DATA Port
-- 傳送 CLI 指令
-- 傳送整份 cfg
-- 讀取 DATA Port 原始 bytes
-- 清除緩衝區
-- 做基本連線測試
-
-一句話理解：
-> 它負責跟雷達硬體真正溝通。
+| 類型 | 說明 |
+|---|---|
+| Dynamic Points | 動態點雲，代表移動中的反射點。 |
+| Static Points | 靜態點雲，代表固定背景或靜止物體。 |
+| Tracked Targets | 經過追蹤演算法整理後的目標。 |
+| Projection Line | 根據目前速度推算出的短時間預測方向。 |
 
 ---
 
-### `parser_as.py`
-**TLV 封包解析器**。
+## ⚙️ 執行環境
 
-負責：
-- 找 Magic Word
-- 擷取完整 packet
-- 解析 frame header
-- 解析 dynamic points
-- 解析 static points
-- 解析 target list / target index
-- 補充診斷資訊與警告訊息
+### 建議版本
 
-一句話理解：
-> 它把原始二進位封包轉成可讀、可用的資料結構。
+- Python **3.10.x**
+- PySide6
+- pyqtgraph
+- pyserial
+- numpy
 
----
+### 安裝方式
 
-### `visualizer_3d.py`
-**畫面顯示模組**。
-
-負責：
-- 以 `X-Y View` 為主要顯示模式
-- 模擬接近 MATLAB GUI 的畫面風格
-- 顯示 dynamic / static / target
-- 顯示 FOV 線
-- 顯示 warning / critical 區域
-- 顯示 projection line
-- 支援 `X-Y / Y-Z / X-Z / 3D View`
-
-一句話理解：
-> 它把解析後的資料畫成你看到的畫面。
-
----
-
-### `AreaScanner_Target_Diagnose_fixed.py`
-**獨立診斷工具**。
-
-適合用來查：
-- 有沒有收到 `TLV type 10`
-- 有沒有 dynamic point 但沒有 target
-- 目前解析採用的 TLV mode 是哪一種
-
-一句話理解：
-> 當 target 沒顯示時，先用它檢查問題出在哪一層。
-
----
-
-## 程式實際流程
-
-```mermaid
-sequenceDiagram
-    participant User as 使用者
-    participant GUI as gui_main.py
-    participant Serial as serial_manager.py
-    participant Parser as parser_as.py
-    participant Viewer as visualizer_3d.py
-
-    User->>GUI: 選 COM / 載入 cfg / Start
-    GUI->>Serial: 開 port、送 cfg
-    Serial-->>GUI: 持續回傳 DATA bytes
-    GUI->>Parser: 送入原始 packet
-    Parser-->>GUI: 回傳 ParsedFrame
-    GUI->>Viewer: 更新點位 / 目標 / 區域
-    Viewer-->>User: 顯示畫面
+```bash
+python -m pip install PySide6 pyqtgraph pyserial numpy
 ```
 
 ---
 
-## 常見問題
+## ▶️ 執行方式
 
-### 1. 為什麼 COM Port 打不開？
-可能原因：
-- MATLAB GUI 還開著
-- TI Visualizer 還開著
-- 其他 Python 程式占用同一個 port
+```bash
+python main.py
+```
 
-建議：
-- 一次只保留一個程式使用 COM Port
-- 先全部關掉，再重新 `Refresh Ports`
+執行後可依序完成以下步驟：
 
----
-
-### 2. 為什麼 Test Connection 失敗？
-可能原因：
-- CLI / DATA Port 選錯
-- baud rate 設錯
-- 雷達尚未正常連接
-- `.cfg` 不對應目前板子或 firmware
+1. 選擇 **CLI Port** 與 **DATA Port**  
+2. 載入 **`.cfg` 檔案**  
+3. 測試連線  
+4. 按下 **Start** 開始接收與顯示資料  
 
 ---
 
-### 3. 為什麼有點雲但沒有 target？
-常見情況：
-- 資料裡根本沒有 `TLV type 10`
-- 有 `TLV type 10`，但 tracker 還沒有分配出穩定目標
-- 人移動太短、太快、太遠，導致目標不穩定
+## 🔌 與雷達的連線概念
 
-建議：
-- 先執行 `AreaScanner_Target_Diagnose_fixed.py`
-- 觀察 `tlv_types`、`dyn`、`targets` 是否正常
+本系統使用兩個序列埠：
 
----
+| Port | 用途 | 常見 Baud Rate |
+|---|---|---|
+| CLI Port | 傳送設定指令給雷達 | 115200 |
+| DATA Port | 接收雷達輸出的 TLV 資料 | 921600 |
 
-### 4. 為什麼 GUI 沒有更新？
-先檢查：
-- Start 後 log 有沒有持續更新
-- DATA Port 有沒有 bytes 進來
-- packet 有沒有成功解析
-- parse warnings 有沒有大量錯誤
+### 說明
 
----
-
-## 使用前注意事項
-
-### 1. CLI / DATA Port 不要接反
-常見設定是：
-- CLI：`115200`
-- DATA：`921600`
-
-如果接反，常見現象會是：
-- CLI 指令沒有正常回應
-- DATA 一直空的
-- 解析結果錯誤
-
-### 2. 同時間不要多個程式一起搶 COM Port
-避免同時開：
-- MATLAB GUI
-- TI Visualizer
-- Python GUI
-
-### 3. 需要自行準備 `.cfg`
-這個分支主要提供 Python 程式碼，執行時需要另外選擇適合的 TI `.cfg` 檔。
+- **CLI Port**：負責送出像 `sensorStart`、`profileCfg`、`frameCfg` 這類文字指令。  
+- **DATA Port**：負責接收雷達輸出的二進位封包資料。  
+- 若兩個 Port 接反，可能會導致：  
+  - 指令沒有正常回應  
+  - DATA 沒有收到資料  
+  - 畫面沒有顯示正確結果  
 
 ---
 
-## 這個分支的優點
+## 📦 TLV 封包解析重點
 
-這個 `Boss` 分支的優點，不只是功能有做出來，而是它的架構也很適合拿來介紹：
+TLV 是 **Type-Length-Value** 的資料格式。  
+此專案會將封包中的不同 TLV 類型拆開處理。
 
-- 主程式入口清楚
-- GUI 控制流程清楚
-- serial 與 parser 分層明確
-- viewer 獨立模組化
-- 額外有診斷工具可用
+### 常見解析內容
 
-也就是說，它不只是能跑，還**很適合拿來做專題說明與功能拆解**。
+| TLV Type | 資料內容 |
+|---|---|
+| Type 1 | Dynamic detected points |
+| Type 7 | Dynamic side info |
+| Type 8 | Static detected points |
+| Type 9 | Static side info |
+| Type 10 | Tracked target list |
+| Type 11 | Target index |
 
----
+### 白話理解
 
-## 後續還可以再改進什麼
-
-如果之後要再升級，可以考慮補：
-
-- `requirements.txt`
-- 範例 `.cfg`
-- 實際執行畫面截圖
-- 不同板子對應的設定說明
-- target 顯示範例圖
-- 更完整的錯誤排除說明
-- README 首圖 / 架構圖 / 操作圖
+- **Type 1 / 8**：代表點的位置資料  
+- **Type 7 / 9**：代表點的輔助資訊  
+- **Type 10 / 11**：代表整理後的追蹤目標結果  
 
 ---
 
-## 給老師看的簡短介紹
+## 🧪 診斷工具
 
-這份程式的重點不是只把雷達資料讀出來，而是把：
+專案中另外提供：
 
-- 雷達連線
-- TLV 封包解析
-- GUI 顯示
-- 目標診斷
+```bash
+python AreaScanner_Target_Diagnose_fixed.py
+```
 
-整合成同一個 Python Area Scanner 工具。
+這支程式的用途是：
 
-如果要用一句話總結：
+- 確認目前資料流裡是否有 **TLV Type 10**  
+- 判斷是「沒有 target 資料」還是「GUI 沒有畫出來」  
+- 幫助快速檢查 parser 與 tracker 狀態  
 
-> 這是一個以 Python 製作的 TI Area Scanner 視覺化程式，能夠完成雷達連線、TLV 解析、目標顯示與診斷，並以接近 MATLAB GUI 的方式呈現。
+這對於分析問題很有幫助，因為可以先把「資料沒有進來」和「畫面沒有更新」分開判斷。
+
+---
+
+## ✅ 本版本的特色整理
+
+- 已有 **完整 GUI 主流程**
+- 已可進行 **序列埠連線與 cfg 傳送**
+- 已可解析 **Area Scanner TLV 封包**
+- 已可顯示 **動態點、靜態點、追蹤目標**
+- 視覺化畫面朝 **TI 官方 MATLAB 風格** 靠近
+- 另外提供 **target 診斷工具**，方便除錯
+
+---
+
+## 📘 適合老師快速理解的一句話
+
+> 這個專案的核心，是將 TI Area Scanner 雷達輸出的 TLV 封包資料，透過 Python 完成接收、解析與 GUI 視覺化顯示，作為接近官方監控介面的展示系統。
+
+---
+
+## 📝 備註
+
+- 使用前需確認電腦已安裝 Python 與必要套件。  
+- 使用時需搭配正確的 mmWave 雷達硬體與 `.cfg` 設定檔。  
+- 同一時間不建議與其他佔用序列埠的程式同時開啟。  
+
+---
+
+<p align="center">
+  <b>TI Area Scanner Python GUI</b><br>
+  <sub>簡潔、易懂、適合教學與展示的說明版本</sub>
+</p>
