@@ -224,8 +224,13 @@ class AreaScanner3DWidget(QWidget):
         y_right = line_length * math.cos(math.radians(fov_deg))
         self.fov_line_right.setData([0, x_right], [0, y_right])
 
-    def set_mount_config(self, *args, **kwargs) -> None:
-        pass
+    def set_mount_config(self, mounting_height_m: float, elevation_tilt_deg: float) -> None:
+        """
+        [新增] 接收來自 GUI 的感測器安裝設定
+        """
+        self._mounting_height_m = mounting_height_m
+        self._elevation_tilt_deg = elevation_tilt_deg
+        # 註解：如果未來需要處理傾斜補償，可以在這裡計算旋轉矩陣
 
     # ------------------------------------------------------
     # 4. 對外公開：用 frame 更新畫面
@@ -240,6 +245,8 @@ class AreaScanner3DWidget(QWidget):
         targets = frame_info["targets"]
         
         is_2d = (self._view_mode == "X-Y View")
+        # 取得目前的高度設定
+        h_offset = self._mounting_height_m
 
         if is_2d:
             # --- 更新 2D 雷達視圖 ---
@@ -253,15 +260,26 @@ class AreaScanner3DWidget(QWidget):
                 pos=[(t["x"], t["y"]) for t in targets] if targets else []
             )
         else:
-            # --- 更新 3D 視圖 ---
-            pos_dyn = np.array([[p[0], p[1], p[2]] for p in dyn_pts]) if dyn_pts else np.empty((0, 3))
-            self.scatter_3d_dynamic.setData(pos=pos_dyn)
+            # --- 更新 3D 視圖 (套用高度偏移) ---
+            # 將感測器座標系的 Z 加上安裝高度，使 3D 網格的 Z=0 成為地面
+            if dyn_pts:
+                pos_dyn = np.array([[p[0], p[1], p[2] + h_offset] for p in dyn_pts])
+                self.scatter_3d_dynamic.setData(pos=pos_dyn)
+            else:
+                self.scatter_3d_dynamic.setData(pos=np.empty((0, 3)))
 
-            pos_sta = np.array([[p[0], p[1], p[2]] for p in sta_pts]) if sta_pts else np.empty((0, 3))
-            self.scatter_3d_static.setData(pos=pos_sta)
+            if sta_pts:
+                pos_sta = np.array([[p[0], p[1], p[2] + h_offset] for p in sta_pts])
+                self.scatter_3d_static.setData(pos=pos_sta)
+            else:
+                self.scatter_3d_static.setData(pos=np.empty((0, 3)))
 
-            pos_tar = np.array([[t["x"], t["y"], t["z"]] for t in targets]) if targets else np.empty((0, 3))
-            self.scatter_3d_targets.setData(pos=pos_tar)
+            if targets:
+                # 目標 (Target) 的 Z 座標也要跟著偏移
+                pos_tar = np.array([[t["x"], t["y"], t["z"] + h_offset] for t in targets])
+                self.scatter_3d_targets.setData(pos=pos_tar)
+            else:
+                self.scatter_3d_targets.setData(pos=np.empty((0, 3)))
 
     def clear(self) -> None:
         if not HAS_PYQTGRAPH or self.stacked_widget is None:
