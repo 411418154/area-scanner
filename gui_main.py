@@ -74,6 +74,10 @@ from visualizer_3d import AreaScanner3DWidget
 
 STATE_SCHEMA_VERSION = 1
 STATE_FILE_PATH = Path.home() / ".area_scanner_state.json"
+FLOW_IDLE = "idle"
+FLOW_PORTS_READY = "ports_ready"
+FLOW_CFG_READY = "cfg_ready"
+FLOW_RUNNING = "running"
 
 
 # ==========================================================
@@ -279,6 +283,9 @@ class AreaScannerMainWindow(QMainWindow):
 
         self.config = RuntimeConfig()
         self.worker: Optional[RadarWorker] = None
+        self._flow_state = FLOW_IDLE
+        self._connection_test_passed = False
+        self._fallback_mode = False
 
         self.setWindowTitle("Area Scanner Python Visualizer")
         self.resize(1550, 900)
@@ -287,11 +294,13 @@ class AreaScannerMainWindow(QMainWindow):
         self._build_toolbar()
         self._build_status_bar()
         self._build_central_ui()
+        self._apply_ui_style()
         self._connect_signals()
         self.load_state()
         self._apply_default_values()
         self.refresh_ports()
         self._apply_viewer_config()
+        self._update_flow_state()
 
         self.append_log("[系統] GUI 已建立。")
         self.append_log("[系統] 這一版的 Viewer 會盡量接近 MATLAB 的 X-Y 畫面。")
@@ -325,6 +334,11 @@ class AreaScannerMainWindow(QMainWindow):
         self.setStatusBar(bar)
         self.status_label = QLabel("就緒")
         bar.addPermanentWidget(self.status_label)
+        self.feedback_label = QLabel("狀態：尚未測試連線")
+        self.feedback_label.setObjectName("feedbackBadge")
+        bar.addPermanentWidget(self.feedback_label)
+        self.step_status_label = QLabel("Step 1/4：設定 COM Port")
+        bar.addPermanentWidget(self.step_status_label)
 
     def _build_central_ui(self) -> None:
         root = QWidget(self)
@@ -333,6 +347,10 @@ class AreaScannerMainWindow(QMainWindow):
         root_layout = QVBoxLayout(root)
         root_layout.setContentsMargins(10, 10, 10, 10)
         root_layout.setSpacing(10)
+
+        self.step_top_label = QLabel("Step 1/4：設定 COM Port")
+        self.step_top_label.setStyleSheet("font-weight: 600; padding: 4px 0;")
+        root_layout.addWidget(self.step_top_label)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_settings_tab(), "設定")
@@ -344,6 +362,7 @@ class AreaScannerMainWindow(QMainWindow):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setSpacing(10)
+        layout.addWidget(self._create_quick_guide_group())
         layout.addWidget(self._create_serial_group())
         layout.addWidget(self._create_cfg_group())
         layout.addWidget(self._create_sensor_group())
@@ -512,13 +531,89 @@ class AreaScannerMainWindow(QMainWindow):
         group = QGroupBox("Run Control")
         layout = QVBoxLayout(group)
 
-        self.btn_start = QPushButton("Start")
-        self.btn_stop = QPushButton("Stop")
+        self.btn_start = QPushButton("▶ Start")
+        self.btn_stop = QPushButton("■ Stop")
         self.btn_stop.setEnabled(False)
 
         layout.addWidget(self.btn_start)
         layout.addWidget(self.btn_stop)
         return group
+
+    def _create_quick_guide_group(self) -> QGroupBox:
+        group = QGroupBox("快速操作指南")
+        layout = QVBoxLayout(group)
+
+        self.label_quick_guide = QLabel(
+            "1) 重新整理 COM 並確認 CLI/DATA\n"
+            "2) 選擇 CFG 檔案\n"
+            "3) 按 Test Connection\n"
+            "4) 按 Start 開始接收資料"
+        )
+        self.label_quick_guide.setWordWrap(True)
+        self.label_quick_guide.setObjectName("quickGuideLabel")
+        layout.addWidget(self.label_quick_guide)
+        return group
+
+    def _apply_ui_style(self) -> None:
+        self.setStyleSheet(
+            """
+            QGroupBox {
+                border: 1px solid #d6d9e0;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 8px;
+                font-weight: 600;
+                background: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 4px;
+                color: #1f2937;
+            }
+            QPushButton {
+                min-height: 30px;
+                border-radius: 6px;
+                border: 1px solid #c9ced8;
+                background: #f5f7fb;
+                padding: 4px 10px;
+            }
+            QPushButton:hover { background: #e9eef7; }
+            QPushButton:disabled {
+                color: #9ca3af;
+                background: #f3f4f6;
+            }
+            QLabel#quickGuideLabel {
+                background: #f8fafc;
+                border: 1px dashed #cbd5e1;
+                border-radius: 6px;
+                padding: 8px;
+                color: #334155;
+                font-weight: 400;
+            }
+            QLabel#feedbackBadge {
+                border: 1px solid #d1d5db;
+                border-radius: 10px;
+                padding: 2px 10px;
+                color: #334155;
+                background: #f8fafc;
+            }
+            """
+        )
+
+    def _set_feedback(self, text: str, level: str = "info") -> None:
+        palette = {
+            "info": ("#f8fafc", "#334155", "#cbd5e1"),
+            "success": ("#ecfdf3", "#166534", "#86efac"),
+            "warn": ("#fff7ed", "#9a3412", "#fdba74"),
+            "error": ("#fef2f2", "#991b1b", "#fca5a5"),
+        }
+        bg, fg, border = palette.get(level, palette["info"])
+        self.feedback_label.setText(text)
+        self.feedback_label.setStyleSheet(
+            f"border: 1px solid {border}; border-radius: 10px; "
+            f"padding: 2px 10px; color: {fg}; background: {bg};"
+        )
 
     # ------------------------------------------------------
     # C. 右側顯示區
@@ -624,6 +719,11 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_fov_inner_angle.valueChanged.connect(self._apply_viewer_config)
         self.spin_fov_outer_range.valueChanged.connect(self._apply_viewer_config)
         self.spin_fov_inner_range.valueChanged.connect(self._apply_viewer_config)
+        self.combo_cli_port.currentTextChanged.connect(self._on_serial_settings_changed)
+        self.combo_data_port.currentTextChanged.connect(self._on_serial_settings_changed)
+        self.spin_cli_baud.valueChanged.connect(self._on_serial_settings_changed)
+        self.spin_data_baud.valueChanged.connect(self._on_serial_settings_changed)
+        self.edit_cfg_path.textChanged.connect(self._on_cfg_path_changed)
 
     def _apply_default_values(self) -> None:
         self.spin_cli_baud.setValue(self.config.cli_baud)
@@ -690,6 +790,79 @@ class AreaScannerMainWindow(QMainWindow):
             outer_range_m=self.config.fov_outer_range_m,
             inner_range_m=self.config.fov_inner_range_m,
         )
+
+    def _on_serial_settings_changed(self) -> None:
+        self._connection_test_passed = False
+        self._update_flow_state()
+
+    def _on_cfg_path_changed(self, _text: str) -> None:
+        self._update_flow_state()
+
+    def _compute_flow_state(self) -> str:
+        if self._fallback_mode:
+            return FLOW_IDLE
+
+        if self.worker is not None and self.worker.isRunning():
+            return FLOW_RUNNING
+
+        has_ports = bool(self.combo_cli_port.currentText().strip()) and bool(
+            self.combo_data_port.currentText().strip()
+        )
+        has_cfg = bool(self.edit_cfg_path.text().strip())
+
+        if has_ports and has_cfg and self._connection_test_passed:
+            return FLOW_CFG_READY
+        if has_ports:
+            return FLOW_PORTS_READY
+        return FLOW_IDLE
+
+    def _step_text_for_state(self, state: str) -> str:
+        if self._fallback_mode:
+            return "保護模式：請重新整理 COM 並重新測試連線"
+        if state == FLOW_RUNNING:
+            return "Step 4/4：執行中（可按 Stop）"
+        if state == FLOW_CFG_READY:
+            return "Step 3/4：可啟動（按 Start 開始）"
+        if state == FLOW_PORTS_READY:
+            return "Step 2/4：載入 CFG 並測試連線"
+        return "Step 1/4：設定 COM Port"
+
+    def _set_critical_inputs_enabled(self, enabled: bool) -> None:
+        widgets = [
+            self.combo_cli_port,
+            self.combo_data_port,
+            self.spin_cli_baud,
+            self.spin_data_baud,
+            self.edit_cfg_path,
+            self.btn_browse_cfg,
+            self.btn_refresh_ports,
+            self.btn_test_connection,
+        ]
+        for widget in widgets:
+            widget.setEnabled(enabled)
+
+    def _update_flow_state(self) -> None:
+        self._flow_state = self._compute_flow_state()
+        step_text = self._step_text_for_state(self._flow_state)
+        self.step_status_label.setText(step_text)
+        self.step_top_label.setText(step_text)
+
+        if self._fallback_mode:
+            self.btn_start.setEnabled(False)
+            self.action_start.setEnabled(False)
+            self.btn_stop.setEnabled(False)
+            self.action_stop.setEnabled(False)
+            self._set_critical_inputs_enabled(True)
+            return
+
+        running = self._flow_state == FLOW_RUNNING
+        can_start = self._flow_state == FLOW_CFG_READY
+
+        self.btn_start.setEnabled(can_start)
+        self.action_start.setEnabled(can_start)
+        self.btn_stop.setEnabled(running)
+        self.action_stop.setEnabled(running)
+        self._set_critical_inputs_enabled(not running)
 
     def load_state(self) -> None:
         """
@@ -780,9 +953,12 @@ class AreaScannerMainWindow(QMainWindow):
 
         self.edit_cfg_path.setText(file_path)
         self.append_log(f"[設定] 已選擇 CFG：{file_path}")
+        self._set_feedback("CFG 已選擇，下一步請 Test Connection", "info")
+        self._update_flow_state()
 
     def refresh_ports(self) -> None:
         """重新掃描目前電腦可見的 COM Port。"""
+        self._fallback_mode = False
         current_cli = self.combo_cli_port.currentText().strip()
         current_data = self.combo_data_port.currentText().strip()
 
@@ -796,10 +972,13 @@ class AreaScannerMainWindow(QMainWindow):
 
         self._restore_combo_selection(self.combo_cli_port, current_cli or self.config.cli_port)
         self._restore_combo_selection(self.combo_data_port, current_data or self.config.data_port)
+        self._connection_test_passed = False
 
         self.append_log("[系統] 已重新整理 COM Port 清單。")
         for info in ports:
             self.append_log(f"  - {info.device}: {info.description}")
+        self._set_feedback("COM 已重新整理，請重新測試連線", "warn")
+        self._update_flow_state()
 
     @staticmethod
     def _restore_combo_selection(combo: QComboBox, target: str) -> None:
@@ -824,15 +1003,21 @@ class AreaScannerMainWindow(QMainWindow):
             logs = manager.test_basic_connection()
             for line in logs:
                 self.append_log(f"[Test] {line}")
+            self._connection_test_passed = True
+            self._fallback_mode = False
+            self._set_feedback("連線測試成功，可按 Start", "success")
             QMessageBox.information(self, "Test Connection", "基本連線測試已完成，請看下方 Log。")
         except Exception as exc:
+            self._connection_test_passed = False
             self.append_log(f"[Test Error] {exc}")
+            self._set_feedback("連線測試失敗，請檢查 COM 與裝置", "error")
             QMessageBox.warning(self, "Test Connection", str(exc))
         finally:
             try:
                 manager.close_ports()
             except Exception:
                 pass
+            self._update_flow_state()
 
     def start_worker(self) -> None:
         """啟動背景工作執行緒。"""
@@ -842,6 +1027,11 @@ class AreaScannerMainWindow(QMainWindow):
 
         self._sync_widgets_to_config()
         self._apply_viewer_config()
+
+        if not self._connection_test_passed:
+            self._set_feedback("請先完成 Test Connection", "warn")
+            QMessageBox.warning(self, "Connection Required", "請先完成 Test Connection。")
+            return
 
         if not self.config.cfg_file:
             QMessageBox.warning(self, "CFG Required", "請先選擇 cfg 檔案。")
@@ -859,6 +1049,8 @@ class AreaScannerMainWindow(QMainWindow):
         self.btn_stop.setEnabled(True)
         self.label_runtime.setText("Running")
         self.append_log("[系統] 已啟動背景工作。")
+        self._set_feedback("資料接收中…", "success")
+        self._update_flow_state()
 
     def stop_worker(self) -> None:
         """停止背景工作。"""
@@ -879,10 +1071,13 @@ class AreaScannerMainWindow(QMainWindow):
         self.label_runtime.setText("Stopped")
         self.update_status("已停止")
         self.append_log("[系統] 已停止背景工作。")
+        self._set_feedback("已停止接收，可調整設定後再啟動", "info")
+        self._update_flow_state()
 
     def _enter_worker_timeout_fallback(self) -> None:
         """worker 停止逾時時的保護流程。"""
         self.worker = None
+        self._fallback_mode = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(False)
         self.action_start.setEnabled(False)
@@ -890,6 +1085,7 @@ class AreaScannerMainWindow(QMainWindow):
         self.label_runtime.setText("Stop Timeout")
         self.update_status("停止逾時，請重新連線")
         self.append_log("[系統] fallback：已停用 Start/Stop 控制，請重新整理 COM Port 並重啟連線。")
+        self._set_feedback("停止逾時，已進入保護模式", "error")
         QMessageBox.warning(
             self,
             "Stop Timeout",
@@ -967,13 +1163,17 @@ class AreaScannerMainWindow(QMainWindow):
         self.label_runtime.setText("Error")
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        self._set_feedback("Worker 發生錯誤，請檢查 Log", "error")
         QMessageBox.warning(self, "Worker Error", message)
+        self._update_flow_state()
 
     def on_worker_finished(self) -> None:
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         if self.label_runtime.text() != "Error":
             self.label_runtime.setText("Stopped")
+            self._set_feedback("工作執行緒已結束", "info")
+        self._update_flow_state()
 
     # ------------------------------------------------------
     # G. 關閉視窗時先安全停止背景工作

@@ -165,6 +165,8 @@ class AreaScanner3DWidget(QWidget):
         self._last_render_start_ts = time.perf_counter()
         self._last_render_ms = 0.0
         self._last_fps = 0.0
+        self._target_history: dict[int, list[tuple[float, float, float]]] = {}
+        self._target_history_max_len = 80
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -269,6 +271,9 @@ class AreaScanner3DWidget(QWidget):
         self.gl_static = None
         self.gl_targets = None
         self._gl_target_vectors: list = []
+        self._gl_target_trails: list = []
+        self._gl_target_boxes: list = []
+        self.gl_radar_marker = None
         if HAS_OPENGL and gl is not None:
             self.gl_view = gl.GLViewWidget()
             self.gl_view.setBackgroundColor(self.style.background)
@@ -285,6 +290,14 @@ class AreaScanner3DWidget(QWidget):
             self.gl_view.addItem(self.gl_dynamic)
             self.gl_view.addItem(self.gl_static)
             self.gl_view.addItem(self.gl_targets)
+
+            # 雷達位置（世界座標原點）
+            self.gl_radar_marker = gl.GLScatterPlotItem(
+                pos=np.asarray([[0.0, 0.0, 0.0]], dtype=float),
+                size=14.0,
+                color=(1.0, 1.0, 0.2, 1.0),
+            )
+            self.gl_view.addItem(self.gl_radar_marker)
             self._stack_layout.addWidget(self.gl_view)
         else:
             self.gl_placeholder = QLabel("3D renderer 不可用：缺少 pyqtgraph.opengl / OpenGL 環境。")
@@ -716,7 +729,10 @@ class AreaScanner3DWidget(QWidget):
         self.gl_dynamic.setData(pos=dyn_np, size=4.0, color=(0.33, 0.78, 0.92, 1.0))
         self.gl_static.setData(pos=sta_np, size=6.0, color=(1.0, 0.0, 1.0, 1.0))
         self.gl_targets.setData(pos=tar_np, size=9.0, color=(0.4, 0.8, 1.0, 1.0))
+        self._update_target_history(targets)
         self._draw_target_vectors_3d(targets)
+        self._draw_target_trails_3d(targets)
+        self._draw_target_boxes_3d(targets)
 
     def _draw_target_vectors_3d(self, targets: Sequence[dict]) -> None:
         if not (HAS_OPENGL and gl is not None and np is not None and self.gl_view is not None):
@@ -739,6 +755,39 @@ class AreaScanner3DWidget(QWidget):
         for idx in range(len(targets), len(self._gl_target_vectors)):
             self._gl_target_vectors[idx].setVisible(False)
 
+    def _draw_target_trails_3d(self, targets: Sequence[dict]) -> None:
+        if not (HAS_OPENGL and gl is not None and np is not None and self.gl_view is not None):
+            return
+        self._ensure_gl_trail_pool(len(targets))
+        for idx, target in enumerate(targets):
+            tid = int(target.get("tid", -1))
+            trail = self._target_history.get(tid, [])
+            item = self._gl_target_trails[idx]
+            if len(trail) < 2:
+                item.setVisible(False)
+                continue
+            pos = np.asarray(trail, dtype=float)
+            item.setData(pos=pos, color=(0.0, 1.0, 0.0, 0.95), width=2.0, mode="line_strip")
+            item.setVisible(True)
+        for idx in range(len(targets), len(self._gl_target_trails)):
+            self._gl_target_trails[idx].setVisible(False)
+
+    def _draw_target_boxes_3d(self, targets: Sequence[dict]) -> None:
+        if not (HAS_OPENGL and gl is not None and np is not None and self.gl_view is not None):
+            return
+        self._ensure_gl_box_pool(len(targets))
+        for idx, target in enumerate(targets):
+            x = float(target.get("x", 0.0))
+            y = float(target.get("y", 0.0))
+            z = float(target.get("z", 0.0))
+            # 人形目標的簡化 3D 包圍盒（可再改成由目標尺寸估計）
+            box = self._build_bbox_line_vertices(center=(x, y, z), size=(0.8, 0.8, 1.8))
+            item = self._gl_target_boxes[idx]
+            item.setData(pos=np.asarray(box, dtype=float), color=(1.0, 0.45, 0.1, 0.9), width=2.0, mode="lines")
+            item.setVisible(True)
+        for idx in range(len(targets), len(self._gl_target_boxes)):
+            self._gl_target_boxes[idx].setVisible(False)
+
     def _ensure_gl_vector_pool(self, count: int) -> None:
         if not (HAS_OPENGL and gl is not None and self.gl_view is not None):
             return
@@ -747,6 +796,70 @@ class AreaScanner3DWidget(QWidget):
             item.setVisible(False)
             self.gl_view.addItem(item)
             self._gl_target_vectors.append(item)
+
+    def _ensure_gl_trail_pool(self, count: int) -> None:
+        if not (HAS_OPENGL and gl is not None and self.gl_view is not None):
+            return
+        while len(self._gl_target_trails) < count:
+            item = gl.GLLinePlotItem()
+            item.setVisible(False)
+            self.gl_view.addItem(item)
+            self._gl_target_trails.append(item)
+
+    def _ensure_gl_box_pool(self, count: int) -> None:
+        if not (HAS_OPENGL and gl is not None and self.gl_view is not None):
+            return
+        while len(self._gl_target_boxes) < count:
+            item = gl.GLLinePlotItem()
+            item.setVisible(False)
+            self.gl_view.addItem(item)
+            self._gl_target_boxes.append(item)
+
+    def _update_target_history(self, targets: Sequence[dict]) -> None:
+        active_tids: set[int] = set()
+        for target in targets:
+            tid = int(target.get("tid", -1))
+            if tid < 0:
+                continue
+            active_tids.add(tid)
+            history = self._target_history.setdefault(tid, [])
+            history.append((float(target.get("x", 0.0)), float(target.get("y", 0.0)), float(target.get("z", 0.0))))
+            if len(history) > self._target_history_max_len:
+                del history[:-self._target_history_max_len]
+
+        # 沒出現的 tid 暫留幾幀可再進階，這裡先直接清除，避免軌跡殘影。
+        for tid in list(self._target_history.keys()):
+            if tid not in active_tids:
+                del self._target_history[tid]
+
+    @staticmethod
+    def _build_bbox_line_vertices(
+        center: tuple[float, float, float],
+        size: tuple[float, float, float],
+    ) -> list[tuple[float, float, float]]:
+        cx, cy, cz = center
+        sx, sy, sz = size
+        hx, hy, hz = sx / 2.0, sy / 2.0, sz / 2.0
+
+        # 8 corners
+        p0 = (cx - hx, cy - hy, cz - hz)
+        p1 = (cx + hx, cy - hy, cz - hz)
+        p2 = (cx + hx, cy + hy, cz - hz)
+        p3 = (cx - hx, cy + hy, cz - hz)
+        p4 = (cx - hx, cy - hy, cz + hz)
+        p5 = (cx + hx, cy - hy, cz + hz)
+        p6 = (cx + hx, cy + hy, cz + hz)
+        p7 = (cx - hx, cy + hy, cz + hz)
+
+        edges = [
+            (p0, p1), (p1, p2), (p2, p3), (p3, p0),
+            (p4, p5), (p5, p6), (p6, p7), (p7, p4),
+            (p0, p4), (p1, p5), (p2, p6), (p3, p7),
+        ]
+        verts: list[tuple[float, float, float]] = []
+        for a, b in edges:
+            verts.extend([a, b])
+        return verts
 
     # ------------------------------------------------------
     # 7. 內部工具：target 投影線與文字
@@ -829,6 +942,11 @@ class AreaScanner3DWidget(QWidget):
         self.gl_targets.setData(pos=empty, size=9.0, color=(0.4, 0.8, 1.0, 1.0))
         for item in self._gl_target_vectors:
             item.setVisible(False)
+        for item in self._gl_target_trails:
+            item.setVisible(False)
+        for item in self._gl_target_boxes:
+            item.setVisible(False)
+        self._target_history.clear()
 
     # ------------------------------------------------------
     # 8. 內部工具：散點與文字
