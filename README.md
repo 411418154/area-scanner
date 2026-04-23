@@ -14,6 +14,7 @@ Python 版 TI Area Scanner GUI，包含：
 
 - Python 3.10.x（建議）
 - Windows 10/11
+- MacOS M系列
 - TI mmWave 硬體（如 AWR68xx + 對應 EVM）
 
 ---
