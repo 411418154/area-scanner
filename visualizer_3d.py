@@ -50,7 +50,7 @@ class AreaScanner3DWidget(QWidget):
         self.style = style if style is not None else ViewerStyle()
 
         # 這裡先保留原有的屬性，以免 gui_main.py 呼叫時找不到
-        self._view_mode = "X-Y View"
+        self._view_mode = "3D View"
         self._enable_zones = True
         self._critical_start_m = 0.0
         self._critical_end_m = 2.0

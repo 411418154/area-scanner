@@ -358,7 +358,7 @@ class AreaScannerMainWindow(QMainWindow):
         layout = QFormLayout(group)
 
         self.combo_view_mode = QComboBox()
-        self.combo_view_mode.addItems(["X-Y View", "Y-Z View", "X-Z View", "3D View"])
+        self.combo_view_mode.addItems(["3D View"])
 
         self.check_enable_zone = QCheckBox("Enable Zones")
 
