@@ -120,6 +120,9 @@ class RuntimeConfig:
     fov_inner_range_m: float = 2.1
 
     view_mode: str = "X-Y View"
+    enable_trail: bool = True
+    trail_length: int = 20
+    enable_roi: bool = False
 
     def to_dict(self) -> dict:
         """序列化成可寫入 JSON 的 dict。"""
@@ -331,11 +334,9 @@ class AreaScannerMainWindow(QMainWindow):
         bar = QStatusBar(self)
         self.setStatusBar(bar)
         self.status_label = QLabel("就緒")
-        self.step_status_label = QLabel("Step 1/4：先測試連線（Test）")
+        self.step_status_label = QLabel("Step 1/4：設定 COM Port")
         bar.addWidget(self.step_status_label)
         bar.addPermanentWidget(self.status_label)
-        self.step_status_label = QLabel("Step 1/4：設定 COM Port")
-        bar.addPermanentWidget(self.step_status_label)
 
     def _build_central_ui(self) -> None:
         root = QWidget(self)
@@ -345,7 +346,6 @@ class AreaScannerMainWindow(QMainWindow):
         root_layout.setContentsMargins(10, 10, 10, 10)
         root_layout.setSpacing(10)
 
-<<<<<<< HEAD
         self.step_top_label = QLabel("Step 1/4：設定 COM Port")
         self.step_top_label.setStyleSheet("font-weight: 600; padding: 4px 0;")
         root_layout.addWidget(self.step_top_label)
@@ -384,21 +384,6 @@ class AreaScannerMainWindow(QMainWindow):
         layout.addWidget(self._create_parse_warning_group(), 1)
         layout.addWidget(self._create_export_group())
         return panel
-=======
-        self.step_top_label = QLabel("Step 1/4：先測試連線（Test）")
-        self.step_top_label.setStyleSheet("font-weight: 600; color: #2d6a9f;")
-        root_layout.addWidget(self.step_top_label)
-
-        content_layout = QHBoxLayout()
-        content_layout.setSpacing(10)
-
-        left = self._build_left_panel()
-        right = self._build_right_panel()
-
-        content_layout.addWidget(left, 0)
-        content_layout.addWidget(right, 1)
-        root_layout.addLayout(content_layout)
->>>>>>> text
 
     # ------------------------------------------------------
     # B. 左側控制面板
@@ -485,6 +470,7 @@ class AreaScannerMainWindow(QMainWindow):
         group = QGroupBox("Viewer / Zones")
         layout = QFormLayout(group)
 
+        # A. 檢視模式與 zone 參數
         self.combo_view_mode = QComboBox()
         self.combo_view_mode.addItems(["X-Y View", "Y-Z View", "X-Z View", "3D View"])
 
@@ -526,6 +512,14 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_fov_inner_range.setRange(0.0, 100.0)
         self.spin_fov_inner_range.setDecimals(2)
 
+        # B. 追蹤輔助（Trail / ROI）
+        self.check_enable_trail = QCheckBox("Enable Target Trail")
+        self.spin_trail_length = QSpinBox()
+        self.spin_trail_length.setRange(2, 200)
+        self.spin_trail_length.setSingleStep(1)
+        self.btn_reset_roi = QPushButton("Reset ROI")
+        self.check_enable_roi = QCheckBox("Enable ROI Filter")
+
         layout.addRow("View Mode", self.combo_view_mode)
         layout.addRow(self.check_enable_zone)
         layout.addRow("Critical Start (m)", self.spin_critical_start)
@@ -537,6 +531,10 @@ class AreaScannerMainWindow(QMainWindow):
         layout.addRow("FOV Inner Angle (deg)", self.spin_fov_inner_angle)
         layout.addRow("FOV Outer Range (m)", self.spin_fov_outer_range)
         layout.addRow("FOV Inner Range (m)", self.spin_fov_inner_range)
+        layout.addRow(self.check_enable_trail)
+        layout.addRow("Trail Length (frames)", self.spin_trail_length)
+        layout.addRow(self.check_enable_roi)
+        layout.addRow(self.btn_reset_roi)
         return group
 
     def _create_run_group(self) -> QGroupBox:
@@ -640,15 +638,7 @@ class AreaScannerMainWindow(QMainWindow):
         self.btn_test_connection.clicked.connect(self.test_connection)
         self.btn_start.clicked.connect(self.start_worker)
         self.btn_stop.clicked.connect(self.stop_worker)
-<<<<<<< HEAD
         self.btn_export_diagnostics.clicked.connect(self.export_diagnostics)
-=======
-        self.combo_cli_port.currentTextChanged.connect(self._on_serial_settings_changed)
-        self.combo_data_port.currentTextChanged.connect(self._on_serial_settings_changed)
-        self.spin_cli_baud.valueChanged.connect(self._on_serial_settings_changed)
-        self.spin_data_baud.valueChanged.connect(self._on_serial_settings_changed)
-        self.edit_cfg_path.textChanged.connect(self._on_cfg_path_changed)
->>>>>>> text
 
         self.combo_view_mode.currentTextChanged.connect(self.on_view_mode_changed)
         self.check_enable_zone.toggled.connect(self._apply_viewer_config)
@@ -663,6 +653,10 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_fov_inner_angle.valueChanged.connect(self._apply_viewer_config)
         self.spin_fov_outer_range.valueChanged.connect(self._apply_viewer_config)
         self.spin_fov_inner_range.valueChanged.connect(self._apply_viewer_config)
+        self.check_enable_trail.toggled.connect(self._apply_viewer_config)
+        self.spin_trail_length.valueChanged.connect(self._apply_viewer_config)
+        self.check_enable_roi.toggled.connect(self._apply_viewer_config)
+        self.btn_reset_roi.clicked.connect(self._on_reset_roi_clicked)
         self.combo_cli_port.currentTextChanged.connect(self._on_serial_settings_changed)
         self.combo_data_port.currentTextChanged.connect(self._on_serial_settings_changed)
         self.spin_cli_baud.valueChanged.connect(self._on_serial_settings_changed)
@@ -687,6 +681,9 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_fov_inner_angle.setValue(self.config.fov_inner_angle_deg)
         self.spin_fov_outer_range.setValue(self.config.fov_outer_range_m)
         self.spin_fov_inner_range.setValue(self.config.fov_inner_range_m)
+        self.check_enable_trail.setChecked(self.config.enable_trail)
+        self.spin_trail_length.setValue(int(self.config.trail_length))
+        self.check_enable_roi.setChecked(self.config.enable_roi)
 
         self.combo_view_mode.setCurrentText(self.config.view_mode)
 
@@ -711,6 +708,9 @@ class AreaScannerMainWindow(QMainWindow):
         self.config.fov_outer_range_m = float(self.spin_fov_outer_range.value())
         self.config.fov_inner_range_m = float(self.spin_fov_inner_range.value())
         self.config.view_mode = self.combo_view_mode.currentText()
+        self.config.enable_trail = self.check_enable_trail.isChecked()
+        self.config.trail_length = int(self.spin_trail_length.value())
+        self.config.enable_roi = self.check_enable_roi.isChecked()
 
     def _apply_viewer_config(self) -> None:
         """把目前 GUI 上的 viewer 參數同步到顯示元件。"""
@@ -734,27 +734,31 @@ class AreaScannerMainWindow(QMainWindow):
             outer_range_m=self.config.fov_outer_range_m,
             inner_range_m=self.config.fov_inner_range_m,
         )
+        self._apply_tracking_config()
+
+    def _apply_tracking_config(self) -> None:
+        """同步 trail/ROI 相關顯示設定。"""
+        self.viewer.set_tracking_config(
+            enable_trail=self.config.enable_trail,
+            trail_length=self.config.trail_length,
+            enable_roi=self.config.enable_roi,
+        )
+
+    def _on_reset_roi_clicked(self) -> None:
+        self.viewer.reset_roi()
 
     def _on_serial_settings_changed(self) -> None:
-<<<<<<< HEAD
-        self._connection_test_passed = False
-        self._update_flow_state()
-
-    def _on_cfg_path_changed(self, _text: str) -> None:
-=======
         if self._connection_test_passed:
             self._connection_test_passed = False
             self.append_log("[流程] Serial 設定已變更，請重新執行 Test Connection。")
         self._update_flow_state()
 
-    def _on_cfg_path_changed(self) -> None:
->>>>>>> text
+    def _on_cfg_path_changed(self, _text: str) -> None:
         self._update_flow_state()
 
     def _compute_flow_state(self) -> str:
         if self.worker is not None and self.worker.isRunning():
             return FLOW_RUNNING
-<<<<<<< HEAD
 
         has_ports = bool(self.combo_cli_port.currentText().strip()) and bool(
             self.combo_data_port.currentText().strip()
@@ -764,16 +768,10 @@ class AreaScannerMainWindow(QMainWindow):
         if has_ports and has_cfg and self._connection_test_passed:
             return FLOW_CFG_READY
         if has_ports:
-=======
-        if self._connection_test_passed and self.edit_cfg_path.text().strip():
-            return FLOW_CFG_READY
-        if self._connection_test_passed:
->>>>>>> text
             return FLOW_PORTS_READY
         return FLOW_IDLE
 
     def _step_text_for_state(self, state: str) -> str:
-<<<<<<< HEAD
         if state == FLOW_RUNNING:
             return "Step 4/4：執行中（可按 Stop）"
         if state == FLOW_CFG_READY:
@@ -781,15 +779,6 @@ class AreaScannerMainWindow(QMainWindow):
         if state == FLOW_PORTS_READY:
             return "Step 2/4：載入 CFG 並測試連線"
         return "Step 1/4：設定 COM Port"
-=======
-        mapping = {
-            FLOW_IDLE: "Step 1/4：先測試連線（Test）",
-            FLOW_PORTS_READY: "Step 2/4：選擇 CFG",
-            FLOW_CFG_READY: "Step 3/4：可開始執行（Start）",
-            FLOW_RUNNING: "Step 4/4：執行中（Running）",
-        }
-        return mapping.get(state, "Step 1/4：先測試連線（Test）")
->>>>>>> text
 
     def _set_critical_inputs_enabled(self, enabled: bool) -> None:
         widgets = [
@@ -797,12 +786,6 @@ class AreaScannerMainWindow(QMainWindow):
             self.combo_data_port,
             self.spin_cli_baud,
             self.spin_data_baud,
-<<<<<<< HEAD
-            self.edit_cfg_path,
-            self.btn_browse_cfg,
-            self.btn_refresh_ports,
-            self.btn_test_connection,
-=======
             self.btn_refresh_ports,
             self.btn_test_connection,
             self.edit_cfg_path,
@@ -820,9 +803,12 @@ class AreaScannerMainWindow(QMainWindow):
             self.spin_fov_inner_angle,
             self.spin_fov_outer_range,
             self.spin_fov_inner_range,
+            self.check_enable_trail,
+            self.spin_trail_length,
+            self.check_enable_roi,
+            self.btn_reset_roi,
             self.action_open_cfg,
             self.action_refresh_ports,
->>>>>>> text
         ]
         for widget in widgets:
             widget.setEnabled(enabled)
@@ -830,13 +816,8 @@ class AreaScannerMainWindow(QMainWindow):
     def _update_flow_state(self) -> None:
         self._flow_state = self._compute_flow_state()
         step_text = self._step_text_for_state(self._flow_state)
-<<<<<<< HEAD
         self.step_status_label.setText(step_text)
         self.step_top_label.setText(step_text)
-=======
-        self.step_top_label.setText(step_text)
-        self.step_status_label.setText(step_text)
->>>>>>> text
 
         running = self._flow_state == FLOW_RUNNING
         can_start = self._flow_state == FLOW_CFG_READY
@@ -960,9 +941,6 @@ class AreaScannerMainWindow(QMainWindow):
             self.append_log(f"  - {info.device}: {info.description}")
         self._update_flow_state()
 
-        self._connection_test_passed = False
-        self._update_flow_state()
-
     @staticmethod
     def _restore_combo_selection(combo: QComboBox, target: str) -> None:
         index = combo.findText(target)
@@ -987,10 +965,6 @@ class AreaScannerMainWindow(QMainWindow):
             for line in logs:
                 self.append_log(f"[Test] {line}")
             self._connection_test_passed = True
-<<<<<<< HEAD
-=======
-            self._update_flow_state()
->>>>>>> text
             QMessageBox.information(self, "Test Connection", "基本連線測試已完成，請看下方 Log。")
         except Exception as exc:
             self._connection_test_passed = False
@@ -1015,11 +989,7 @@ class AreaScannerMainWindow(QMainWindow):
         self._apply_viewer_config()
 
         if not self._connection_test_passed:
-<<<<<<< HEAD
             QMessageBox.warning(self, "Connection Required", "請先完成 Test Connection。")
-=======
-            QMessageBox.warning(self, "Test Required", "尚未通過連線測試，請先按 Test Connection。")
->>>>>>> text
             return
 
         if not self.config.cfg_file:
