@@ -120,6 +120,9 @@ class RuntimeConfig:
     fov_inner_range_m: float = 2.1
 
     view_mode: str = "X-Y View"
+    enable_trail: bool = True
+    trail_length: int = 20
+    enable_roi: bool = False
 
     def to_dict(self) -> dict:
         """序列化成可寫入 JSON 的 dict。"""
@@ -508,6 +511,13 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_fov_inner_range.setRange(0.0, 100.0)
         self.spin_fov_inner_range.setDecimals(2)
 
+        self.check_enable_trail = QCheckBox("Enable Target Trail")
+        self.spin_trail_length = QSpinBox()
+        self.spin_trail_length.setRange(2, 200)
+        self.spin_trail_length.setSingleStep(1)
+        self.btn_reset_roi = QPushButton("Reset ROI")
+        self.check_enable_roi = QCheckBox("Enable ROI Filter")
+
         layout.addRow("View Mode", self.combo_view_mode)
         layout.addRow(self.check_enable_zone)
         layout.addRow("Critical Start (m)", self.spin_critical_start)
@@ -519,6 +529,10 @@ class AreaScannerMainWindow(QMainWindow):
         layout.addRow("FOV Inner Angle (deg)", self.spin_fov_inner_angle)
         layout.addRow("FOV Outer Range (m)", self.spin_fov_outer_range)
         layout.addRow("FOV Inner Range (m)", self.spin_fov_inner_range)
+        layout.addRow(self.check_enable_trail)
+        layout.addRow("Trail Length (frames)", self.spin_trail_length)
+        layout.addRow(self.check_enable_roi)
+        layout.addRow(self.btn_reset_roi)
         return group
 
     def _create_run_group(self) -> QGroupBox:
@@ -637,6 +651,10 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_fov_inner_angle.valueChanged.connect(self._apply_viewer_config)
         self.spin_fov_outer_range.valueChanged.connect(self._apply_viewer_config)
         self.spin_fov_inner_range.valueChanged.connect(self._apply_viewer_config)
+        self.check_enable_trail.toggled.connect(self._apply_viewer_config)
+        self.spin_trail_length.valueChanged.connect(self._apply_viewer_config)
+        self.check_enable_roi.toggled.connect(self._apply_viewer_config)
+        self.btn_reset_roi.clicked.connect(self._on_reset_roi_clicked)
         self.combo_cli_port.currentTextChanged.connect(self._on_serial_settings_changed)
         self.combo_data_port.currentTextChanged.connect(self._on_serial_settings_changed)
         self.spin_cli_baud.valueChanged.connect(self._on_serial_settings_changed)
@@ -661,6 +679,9 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_fov_inner_angle.setValue(self.config.fov_inner_angle_deg)
         self.spin_fov_outer_range.setValue(self.config.fov_outer_range_m)
         self.spin_fov_inner_range.setValue(self.config.fov_inner_range_m)
+        self.check_enable_trail.setChecked(self.config.enable_trail)
+        self.spin_trail_length.setValue(int(self.config.trail_length))
+        self.check_enable_roi.setChecked(self.config.enable_roi)
 
         self.combo_view_mode.setCurrentText(self.config.view_mode)
 
@@ -685,6 +706,9 @@ class AreaScannerMainWindow(QMainWindow):
         self.config.fov_outer_range_m = float(self.spin_fov_outer_range.value())
         self.config.fov_inner_range_m = float(self.spin_fov_inner_range.value())
         self.config.view_mode = self.combo_view_mode.currentText()
+        self.config.enable_trail = self.check_enable_trail.isChecked()
+        self.config.trail_length = int(self.spin_trail_length.value())
+        self.config.enable_roi = self.check_enable_roi.isChecked()
 
     def _apply_viewer_config(self) -> None:
         """把目前 GUI 上的 viewer 參數同步到顯示元件。"""
@@ -708,6 +732,14 @@ class AreaScannerMainWindow(QMainWindow):
             outer_range_m=self.config.fov_outer_range_m,
             inner_range_m=self.config.fov_inner_range_m,
         )
+        self.viewer.set_tracking_config(
+            enable_trail=self.config.enable_trail,
+            trail_length=self.config.trail_length,
+            enable_roi=self.config.enable_roi,
+        )
+
+    def _on_reset_roi_clicked(self) -> None:
+        self.viewer.reset_roi()
 
     def _on_serial_settings_changed(self) -> None:
         if self._connection_test_passed:
@@ -765,6 +797,10 @@ class AreaScannerMainWindow(QMainWindow):
             self.spin_fov_inner_angle,
             self.spin_fov_outer_range,
             self.spin_fov_inner_range,
+            self.check_enable_trail,
+            self.spin_trail_length,
+            self.check_enable_roi,
+            self.btn_reset_roi,
             self.action_open_cfg,
             self.action_refresh_ports,
         ]
