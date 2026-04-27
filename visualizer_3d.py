@@ -302,7 +302,6 @@ class AreaScanner3DWidget(QWidget):
         self._projection_items: list = []
         self._target_text_items: list = []
         self._trail_items: list = []
-        self._trail_item_keys: list[int] = []
         self._gl_trail_items: list = []
         self._roi_rect = None
         self._roi_default_pos = (-2.0, 0.5)
@@ -522,20 +521,27 @@ class AreaScanner3DWidget(QWidget):
         if not self._roi_enabled or self._roi_rect is None:
             return list(targets)
 
-        rx, ry = self._roi_rect.pos().x(), self._roi_rect.pos().y()
-        rw, rh = self._roi_rect.size().x(), self._roi_rect.size().y()
-        x_min, x_max = min(rx, rx + rw), max(rx, rx + rw)
-        y_min, y_max = min(ry, ry + rh), max(ry, ry + rh)
+        x_min, x_max, y_min, y_max = self._roi_bounds()
 
         filtered: list[dict] = []
         for target in targets:
-            projected = self._project_targets([target])
-            if not projected:
-                continue
-            px, py = projected[0]
+            px, py = self._project_target_point(target)
             if x_min <= px <= x_max and y_min <= py <= y_max:
                 filtered.append(target)
         return filtered
+
+    def _roi_bounds(self) -> tuple[float, float, float, float]:
+        """回傳 ROI 方框在目前 plot 座標系內的邊界。"""
+        if self._roi_rect is None:
+            return (0.0, 0.0, 0.0, 0.0)
+        rx, ry = self._roi_rect.pos().x(), self._roi_rect.pos().y()
+        rw, rh = self._roi_rect.size().x(), self._roi_rect.size().y()
+        return (
+            min(rx, rx + rw),
+            max(rx, rx + rw),
+            min(ry, ry + rh),
+            max(ry, ry + rh),
+        )
 
     def _append_target_history(self, targets: Sequence[dict]) -> None:
         live_ids: set[int] = set()
@@ -569,7 +575,6 @@ class AreaScanner3DWidget(QWidget):
 
         tids = sorted(self._target_trails.keys())
         self._ensure_trail_item_pool(len(tids))
-        self._trail_item_keys = tids
         for idx, tid in enumerate(tids):
             hist = list(self._target_trails.get(tid, []))
             projected = self._project_points(hist)
@@ -792,19 +797,18 @@ class AreaScanner3DWidget(QWidget):
 
     def _project_targets(self, targets: Iterable[dict]) -> list[tuple[float, float]]:
         """把 target dict 投影成 2D。"""
-        projected: list[tuple[float, float]] = []
-        for t in targets:
-            x = float(t.get("x", 0.0))
-            y = float(t.get("y", 0.0))
-            z = float(t.get("z", 0.0))
+        return [self._project_target_point(t) for t in targets]
 
-            if self._view_mode == "Y-Z View":
-                projected.append((y, z))
-            elif self._view_mode == "X-Z View":
-                projected.append((x, z))
-            else:
-                projected.append((x, y))
-        return projected
+    def _project_target_point(self, target: dict) -> tuple[float, float]:
+        """投影單一 target 到當前 2D 視角座標。"""
+        x = float(target.get("x", 0.0))
+        y = float(target.get("y", 0.0))
+        z = float(target.get("z", 0.0))
+        if self._view_mode == "Y-Z View":
+            return (y, z)
+        if self._view_mode == "X-Z View":
+            return (x, z)
+        return (x, y)
 
     @staticmethod
     def _downsample_points(points: Sequence[tuple[float, float, float]], max_points: int) -> list[tuple[float, float, float]]:

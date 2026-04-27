@@ -470,6 +470,7 @@ class AreaScannerMainWindow(QMainWindow):
         group = QGroupBox("Viewer / Zones")
         layout = QFormLayout(group)
 
+        # A. 檢視模式與 zone 參數
         self.combo_view_mode = QComboBox()
         self.combo_view_mode.addItems(["X-Y View", "Y-Z View", "X-Z View", "3D View"])
 
@@ -511,6 +512,7 @@ class AreaScannerMainWindow(QMainWindow):
         self.spin_fov_inner_range.setRange(0.0, 100.0)
         self.spin_fov_inner_range.setDecimals(2)
 
+        # B. 追蹤輔助（Trail / ROI）
         self.check_enable_trail = QCheckBox("Enable Target Trail")
         self.spin_trail_length = QSpinBox()
         self.spin_trail_length.setRange(2, 200)
@@ -732,6 +734,10 @@ class AreaScannerMainWindow(QMainWindow):
             outer_range_m=self.config.fov_outer_range_m,
             inner_range_m=self.config.fov_inner_range_m,
         )
+        self._apply_tracking_config()
+
+    def _apply_tracking_config(self) -> None:
+        """同步 trail/ROI 相關顯示設定。"""
         self.viewer.set_tracking_config(
             enable_trail=self.config.enable_trail,
             trail_length=self.config.trail_length,
@@ -933,9 +939,6 @@ class AreaScannerMainWindow(QMainWindow):
         self.append_log("[系統] 已重新整理 COM Port 清單。")
         for info in ports:
             self.append_log(f"  - {info.device}: {info.description}")
-        self._update_flow_state()
-
-        self._connection_test_passed = False
         self._update_flow_state()
 
     @staticmethod
