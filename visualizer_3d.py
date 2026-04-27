@@ -58,6 +58,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
+from collections import deque
 import math
 import time
 
@@ -108,6 +109,9 @@ class ViewerStyle:
     static_brush: str = "#ff00ff"      # 洋紅
     target_pen: str = "#66ccff"        # 藍色空心圈
     projection_pen: str = "#ffff00"    # 黃色投影線
+    trail_pen: str = "#00ff99"         # 目標歷史軌跡
+    roi_pen: str = "#ff8800"           # ROI 框選
+    target_box_pen: str = "#ffcc00"    # 目標外框
 
     # 區域顏色
     warn_brush: tuple = (128, 128, 0, 120)     # 橄欖黃半透明
@@ -162,6 +166,14 @@ class AreaScanner3DWidget(QWidget):
         self._mounting_height_m = 2.0
         self._elevation_tilt_deg = 0.0
         self._max_points_per_frame = 4000
+        self._trail_enabled = True
+        self._trail_length = 40
+        self._roi_enabled = False
+        self._target_box_size_xy = 0.55
+        self._target_box_size_z = 1.2
+        self._target_trails: dict[int, deque[tuple[float, float, float]]] = {}
+        self._trail_miss_count: dict[int, int] = {}
+        self._active_trail_ids: set[int] = set()
         self._last_render_start_ts = time.perf_counter()
         self._last_render_ms = 0.0
         self._last_fps = 0.0
@@ -294,6 +306,15 @@ class AreaScanner3DWidget(QWidget):
         # target overlay 使用可重用 pool，避免每幀建立/刪除 item。
         self._projection_items: list = []
         self._target_text_items: list = []
+        self._trail_items: list = []
+        self._target_box_items: list = []
+        self._gl_trail_items: list = []
+        self._gl_target_box_items: list = []
+        self._roi_rect = None
+        self._roi_default_pos = (-2.0, 0.5)
+        self._roi_default_size = (4.0, 4.0)
+        if self.plot is not None:
+            self._init_roi_item()
 
         # 先畫一次背景圖層
         self._refresh_background_layers()
@@ -401,6 +422,21 @@ class AreaScanner3DWidget(QWidget):
         """限制每幀最多渲染點數，超過則降採樣。"""
         self._max_points_per_frame = max(100, int(max_points_per_frame))
 
+    def set_tracking_config(self, enable_trail: bool, trail_length: int, enable_roi: bool) -> None:
+        """設定目標歷史軌跡與 ROI 框選。"""
+        self._trail_enabled = bool(enable_trail)
+        self._trail_length = max(2, int(trail_length))
+        self._roi_enabled = bool(enable_roi)
+        if self._roi_rect is not None:
+            self._roi_rect.setVisible(self._roi_enabled)
+
+    def reset_roi(self) -> None:
+        """重設 ROI 到預設位置。"""
+        if self._roi_rect is None:
+            return
+        self._roi_rect.setPos(self._roi_default_pos[0], self._roi_default_pos[1])
+        self._roi_rect.setSize(self._roi_default_size)
+
     # ------------------------------------------------------
     # 4. 對外公開：用 frame 更新畫面
     # ------------------------------------------------------
@@ -423,21 +459,33 @@ class AreaScanner3DWidget(QWidget):
         frame_info = self._normalize_frame(frame)
         dynamic_points = self._downsample_points(frame_info["dynamic_points"], self._max_points_per_frame)
         static_points = self._downsample_points(frame_info["static_points"], self._max_points_per_frame)
+        all_targets = list(frame_info["targets"])
+        self._append_target_history(all_targets)
+        targets = self._filter_targets_by_roi(all_targets)
+        self._active_trail_ids = {
+            int(t.get("tid", -1))
+            for t in targets
+            if int(t.get("tid", -1)) >= 0
+        }
 
         if self._view_mode == "3D View":
-            self._update_3d_view(dynamic_points, static_points, frame_info["targets"])
+            self._update_3d_view(dynamic_points, static_points, targets)
+            self._draw_target_boxes_3d(targets)
+            self._draw_trails_3d()
         else:
             dyn_2d = self._project_points(dynamic_points)
             sta_2d = self._project_points(static_points)
-            tar_2d = self._project_targets(frame_info["targets"])
+            tar_2d = self._project_targets(targets)
 
             # 更新三種散點
             self._set_scatter_data(self.scatter_dynamic, dyn_2d)
             self._set_scatter_data(self.scatter_static, sta_2d)
             self._set_scatter_data(self.scatter_targets, tar_2d)
+            self._draw_target_boxes_2d(targets)
+            self._draw_trails_2d()
 
             # 更新 target 的投影線與文字
-            self._draw_target_overlays(frame_info["targets"])
+            self._draw_target_overlays(targets)
 
         # 左上角統計資訊
         self._last_render_ms = (time.perf_counter() - start_ts) * 1000.0
@@ -446,7 +494,7 @@ class AreaScanner3DWidget(QWidget):
             num_frames_in_buffer=buffer_frame_count,
             num_dynamic=len(frame_info["dynamic_points"]),
             num_static=len(frame_info["static_points"]),
-            num_targets=len(frame_info["targets"]),
+            num_targets=len(targets),
             render_dynamic=len(dynamic_points),
             render_static=len(static_points),
         )
@@ -462,8 +510,157 @@ class AreaScanner3DWidget(QWidget):
         self._set_scatter_data(self.scatter_targets, [])
         self._clear_dynamic_overlay_items()
         self._clear_3d_items()
+        self._target_trails.clear()
+        self._trail_miss_count.clear()
+        self._active_trail_ids.clear()
+        self._clear_trail_items()
         self._update_stats_text(0, 0, 0, 0, 0, 0, 0)
         self._update_metrics_label()
+
+    def _init_roi_item(self) -> None:
+        if not HAS_PYQTGRAPH or self.plot is None or pg is None:
+            return
+        self._roi_rect = pg.RectROI(
+            pos=self._roi_default_pos,
+            size=self._roi_default_size,
+            pen=pg.mkPen(self.style.roi_pen, width=1.6),
+            movable=True,
+            resizable=True,
+            removable=False,
+        )
+        self._roi_rect.addScaleHandle((1, 1), (0, 0))
+        self._roi_rect.addScaleHandle((0, 0), (1, 1))
+        self._roi_rect.setZValue(20)
+        self.plot.addItem(self._roi_rect)
+        self._roi_rect.setVisible(self._roi_enabled)
+
+    def _filter_targets_by_roi(self, targets: Sequence[dict]) -> list[dict]:
+        if not self._roi_enabled or self._roi_rect is None:
+            return list(targets)
+
+        x_min, x_max, y_min, y_max = self._roi_bounds()
+
+        filtered: list[dict] = []
+        for target in targets:
+            px, py = self._project_target_point(target)
+            if x_min <= px <= x_max and y_min <= py <= y_max:
+                filtered.append(target)
+        return filtered
+
+    def _roi_bounds(self) -> tuple[float, float, float, float]:
+        """回傳 ROI 方框在目前 plot 座標系內的邊界。"""
+        if self._roi_rect is None:
+            return (0.0, 0.0, 0.0, 0.0)
+        rx, ry = self._roi_rect.pos().x(), self._roi_rect.pos().y()
+        rw, rh = self._roi_rect.size().x(), self._roi_rect.size().y()
+        return (
+            min(rx, rx + rw),
+            max(rx, rx + rw),
+            min(ry, ry + rh),
+            max(ry, ry + rh),
+        )
+
+    def _append_target_history(self, targets: Sequence[dict]) -> None:
+        live_ids: set[int] = set()
+        for target in targets:
+            tid = int(target.get("tid", -1))
+            if tid < 0:
+                continue
+            live_ids.add(tid)
+            if tid not in self._target_trails:
+                self._target_trails[tid] = deque(maxlen=self._trail_length)
+            trail = self._target_trails[tid]
+            if trail.maxlen != self._trail_length:
+                trail = deque(trail, maxlen=self._trail_length)
+                self._target_trails[tid] = trail
+            trail.append(
+                (
+                    float(target.get("x", 0.0)),
+                    float(target.get("y", 0.0)),
+                    float(target.get("z", 0.0)),
+                )
+            )
+            self._trail_miss_count[tid] = 0
+
+        for tid in self._target_trails:
+            if tid not in live_ids:
+                self._trail_miss_count[tid] = self._trail_miss_count.get(tid, 0) + 1
+
+        max_miss_frames = max(3, self._trail_length // 2)
+        stale = [
+            tid
+            for tid, miss_count in self._trail_miss_count.items()
+            if miss_count > max_miss_frames
+        ]
+        for tid in stale:
+            self._target_trails.pop(tid, None)
+            self._trail_miss_count.pop(tid, None)
+
+    def _draw_trails_2d(self) -> None:
+        if not self._trail_enabled or not HAS_PYQTGRAPH or self.plot is None or pg is None:
+            self._clear_trail_items()
+            return
+
+        tids = self._trail_ids_for_render()
+        self._ensure_trail_item_pool(len(tids))
+        for idx, tid in enumerate(tids):
+            hist = list(self._target_trails.get(tid, []))
+            projected = self._project_points(hist)
+            xs = [p[0] for p in projected]
+            ys = [p[1] for p in projected]
+            self._trail_items[idx].setData(xs, ys)
+            self._trail_items[idx].setVisible(len(xs) >= 2)
+
+        for idx in range(len(tids), len(self._trail_items)):
+            self._trail_items[idx].setVisible(False)
+
+    def _ensure_trail_item_pool(self, count: int) -> None:
+        if not HAS_PYQTGRAPH or self.plot is None or pg is None:
+            return
+        while len(self._trail_items) < count:
+            trail_item = self.plot.plot(
+                [],
+                [],
+                pen=pg.mkPen(self.style.trail_pen, width=1.4),
+            )
+            trail_item.setVisible(False)
+            self._trail_items.append(trail_item)
+
+    def _clear_trail_items(self) -> None:
+        for item in self._trail_items:
+            item.setVisible(False)
+
+    def _draw_target_boxes_2d(self, targets: Sequence[dict]) -> None:
+        if not HAS_PYQTGRAPH or self.plot is None or pg is None:
+            return
+        self._ensure_target_box_pool(len(targets))
+        half = self._target_box_size_xy / 2.0
+        for idx, target in enumerate(targets):
+            cx, cy = self._project_target_point(target)
+            xs = [cx - half, cx + half, cx + half, cx - half, cx - half]
+            ys = [cy - half, cy - half, cy + half, cy + half, cy - half]
+            item = self._target_box_items[idx]
+            item.setData(xs, ys)
+            item.setVisible(True)
+        for idx in range(len(targets), len(self._target_box_items)):
+            self._target_box_items[idx].setVisible(False)
+
+    def _ensure_target_box_pool(self, count: int) -> None:
+        if not HAS_PYQTGRAPH or self.plot is None or pg is None:
+            return
+        while len(self._target_box_items) < count:
+            box_item = self.plot.plot(
+                [],
+                [],
+                pen=pg.mkPen(self.style.target_box_pen, width=1.6),
+            )
+            box_item.setVisible(False)
+            self._target_box_items.append(box_item)
+
+    def _trail_ids_for_render(self) -> list[int]:
+        if self._roi_enabled:
+            return sorted(tid for tid in self._active_trail_ids if tid in self._target_trails)
+        return sorted(self._target_trails.keys())
 
     # ------------------------------------------------------
     # 5. 內部工具：畫背景與範圍
@@ -660,19 +857,18 @@ class AreaScanner3DWidget(QWidget):
 
     def _project_targets(self, targets: Iterable[dict]) -> list[tuple[float, float]]:
         """把 target dict 投影成 2D。"""
-        projected: list[tuple[float, float]] = []
-        for t in targets:
-            x = float(t.get("x", 0.0))
-            y = float(t.get("y", 0.0))
-            z = float(t.get("z", 0.0))
+        return [self._project_target_point(t) for t in targets]
 
-            if self._view_mode == "Y-Z View":
-                projected.append((y, z))
-            elif self._view_mode == "X-Z View":
-                projected.append((x, z))
-            else:
-                projected.append((x, y))
-        return projected
+    def _project_target_point(self, target: dict) -> tuple[float, float]:
+        """投影單一 target 到當前 2D 視角座標。"""
+        x = float(target.get("x", 0.0))
+        y = float(target.get("y", 0.0))
+        z = float(target.get("z", 0.0))
+        if self._view_mode == "Y-Z View":
+            return (y, z)
+        if self._view_mode == "X-Z View":
+            return (x, z)
+        return (x, y)
 
     @staticmethod
     def _downsample_points(points: Sequence[tuple[float, float, float]], max_points: int) -> list[tuple[float, float, float]]:
@@ -748,6 +944,79 @@ class AreaScanner3DWidget(QWidget):
             self.gl_view.addItem(item)
             self._gl_target_vectors.append(item)
 
+    def _draw_trails_3d(self) -> None:
+        if not (self._trail_enabled and HAS_OPENGL and gl is not None and np is not None and self.gl_view is not None):
+            for item in self._gl_trail_items:
+                item.setVisible(False)
+            return
+
+        tids = self._trail_ids_for_render()
+        while len(self._gl_trail_items) < len(tids):
+            item = gl.GLLinePlotItem()
+            item.setVisible(False)
+            self.gl_view.addItem(item)
+            self._gl_trail_items.append(item)
+
+        for idx, tid in enumerate(tids):
+            hist = list(self._target_trails.get(tid, []))
+            if len(hist) < 2:
+                self._gl_trail_items[idx].setVisible(False)
+                continue
+            pos = np.asarray(hist, dtype=float)
+            self._gl_trail_items[idx].setData(
+                pos=pos,
+                color=(0.0, 1.0, 0.6, 0.8),
+                width=1.5,
+                mode="line_strip",
+            )
+            self._gl_trail_items[idx].setVisible(True)
+
+        for idx in range(len(tids), len(self._gl_trail_items)):
+            self._gl_trail_items[idx].setVisible(False)
+
+    def _draw_target_boxes_3d(self, targets: Sequence[dict]) -> None:
+        if not (HAS_OPENGL and gl is not None and np is not None and self.gl_view is not None):
+            return
+
+        while len(self._gl_target_box_items) < len(targets):
+            item = gl.GLLinePlotItem()
+            item.setVisible(False)
+            self.gl_view.addItem(item)
+            self._gl_target_box_items.append(item)
+
+        half_xy = self._target_box_size_xy / 2.0
+        half_z = self._target_box_size_z / 2.0
+        for idx, target in enumerate(targets):
+            cx = float(target.get("x", 0.0))
+            cy = float(target.get("y", 0.0))
+            cz = float(target.get("z", 0.0))
+            x0, x1 = cx - half_xy, cx + half_xy
+            y0, y1 = cy - half_xy, cy + half_xy
+            z0, z1 = cz - half_z, cz + half_z
+            segments = np.asarray(
+                [
+                    [x0, y0, z0], [x1, y0, z0],
+                    [x1, y0, z0], [x1, y1, z0],
+                    [x1, y1, z0], [x0, y1, z0],
+                    [x0, y1, z0], [x0, y0, z0],
+                    [x0, y0, z1], [x1, y0, z1],
+                    [x1, y0, z1], [x1, y1, z1],
+                    [x1, y1, z1], [x0, y1, z1],
+                    [x0, y1, z1], [x0, y0, z1],
+                    [x0, y0, z0], [x0, y0, z1],
+                    [x1, y0, z0], [x1, y0, z1],
+                    [x1, y1, z0], [x1, y1, z1],
+                    [x0, y1, z0], [x0, y1, z1],
+                ],
+                dtype=float,
+            )
+            item = self._gl_target_box_items[idx]
+            item.setData(pos=segments, color=(1.0, 0.85, 0.1, 0.9), width=1.6, mode="lines")
+            item.setVisible(True)
+
+        for idx in range(len(targets), len(self._gl_target_box_items)):
+            self._gl_target_box_items[idx].setVisible(False)
+
     # ------------------------------------------------------
     # 7. 內部工具：target 投影線與文字
     # ------------------------------------------------------
@@ -819,6 +1088,8 @@ class AreaScanner3DWidget(QWidget):
             item.setVisible(False)
         for item in self._target_text_items:
             item.setVisible(False)
+        for item in self._target_box_items:
+            item.setVisible(False)
 
     def _clear_3d_items(self) -> None:
         if not (HAS_OPENGL and np is not None and self.gl_dynamic is not None):
@@ -828,6 +1099,10 @@ class AreaScanner3DWidget(QWidget):
         self.gl_static.setData(pos=empty, size=6.0, color=(1.0, 0.0, 1.0, 1.0))
         self.gl_targets.setData(pos=empty, size=9.0, color=(0.4, 0.8, 1.0, 1.0))
         for item in self._gl_target_vectors:
+            item.setVisible(False)
+        for item in self._gl_trail_items:
+            item.setVisible(False)
+        for item in self._gl_target_box_items:
             item.setVisible(False)
 
     # ------------------------------------------------------
