@@ -206,9 +206,9 @@ class PlaybackWorker(QThread):
         self.status_signal.emit(f"重播中:{path.name}")
 
         try:
-            if path.suffix.lower == '.bin':
+            if path.suffix.lower() == '.bin':
                 self._play_bin(path)
-            elif path.suffix.lower == '.csv':
+            elif path.suffix.lower() == '.csv':
                 self._play_csv(path)
             else:
                 self.error_signal.emit("不支援的格式,請選擇.bin或.csv")
