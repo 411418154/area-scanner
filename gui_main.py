@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import time
+import csv
 from datetime import datetime
 from typing import Optional
 
@@ -183,6 +184,80 @@ class RadarWorker(QThread):
 
             self.status_signal.emit("已停止。")
             self.finished_signal.emit()
+class PlaybackWorker(QThread):
+    status_signal = Signal(str)
+    log_signal = Signal(str)
+    frame_signal = Signal(object)
+    error_signal = Signal(str)
+    finished_signal = Signal()
+
+    def __init__(self, filepath : str, parent = None):
+        super().__init__(parent)
+        self.filepath = filepath
+        self._running = False
+
+    def stop(self) -> None:
+        self._running = False
+    
+    def run(self) -> None:
+        self._running = True
+        path = Path(self.filepath)
+        self.log_signal.emit(f"[重播] 開始讀取檔案:{path.name}")
+        self.status_signal.emit(f"重播中:{path.name}")
+
+        try:
+            if path.suffix.lower == '.bin':
+                self._play_bin(path)
+            elif path.suffix.lower == '.csv':
+                self._play_csv(path)
+            else:
+                self.error_signal.emit("不支援的格式,請選擇.bin或.csv")
+        except Exception as e:
+            self.error_signal.emit(f"重播發生錯誤{e}")
+        finally:
+            self.status_signal.emit("重播已結束！")
+            self.finished_signal.emit()
+
+    def _play_bin(self, path : Path) -> None:
+        parser = AreaScannerParser()
+        with open(path,'rb') as f:
+            while self._running:
+                chunk = f.read(4096)
+                if not chunk: break
+
+                parser.append_data(chunk)
+                for pkt in parser.extract_packets():
+                    if not self._running:break
+                    try:
+                        frame = parse_packet(pkt)
+                        self.frame_signal.emit(frame)
+                        self.msleep(50)
+                    except: pass
+    def _play_csv(self, path : Path) -> None:
+        from parser_as import ParsedFrame, FrameHeader, TargetRecord
+        import collections
+
+        frames_data = collections.defaultdict(list)
+        with open(path, 'r',encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                frames_data[int(row['Frame'])].append(row)
+
+        for frame_idx in sorted(frames_data.keys()):
+            if not self._running:break
+            header = FrameHeader(b'',0,0,0,frame_idx,0,0,1,0,0)
+            frame = ParsedFrame(header=header)
+
+            for r in frames_data[frame_idx]:
+                t = TargetRecord(tid=int(r['TID']),pos_x=float(r['X']),pos_y=float(r['Y']),pos_z=float(r['Z']),
+                                 vel_x=float(r['VX']),vel_y=float(r['VY']),vel_z=float(r['VZ']),acc_x=0,acc_y=0,acc_z=0)
+                frame.targets.append(t)
+            self.frame_signal.emit(frame)
+            self.msleep(50)
+
+
+
+
 
 
 # ==========================================================
@@ -267,6 +342,7 @@ class AreaScannerMainWindow(QMainWindow):
         layout.addWidget(self._create_sensor_group())
         layout.addWidget(self._create_zone_group())
         layout.addWidget(self._create_record_group()) # 原 Run Group
+        layout.addWidget(self._create_replay_group())
         layout.addStretch(1)
         return panel
 
@@ -328,6 +404,26 @@ class AreaScannerMainWindow(QMainWindow):
         layout.addWidget(self.check_rec_csv)
         layout.addWidget(self.check_show_traj)
         return group
+    
+    def _create_replay_group(self) -> QGroupBox:
+        group = QGroupBox("Replay")
+        layout = QVBoxLayout(group)
+
+        self.edit_replay_file = QLineEdit()
+        self.edit_replay_file.setPlaceholderText("選擇.bin或.csv檔案...")
+        self.btn_browse_replay = QPushButton("瀏覽..")
+        self.btn_start_replay = QPushButton("開始重播")
+
+        h_layout = QHBoxLayout()
+        h_layout.addWidget(self.edit_replay_file)
+        h_layout.addWidget(self.btn_browse_replay)
+
+        layout.addLayout(h_layout)
+        layout.addWidget(self.btn_start_replay)
+        return group
+
+
+
 
     def _build_right_panel(self) -> QWidget:
         panel = QWidget()
@@ -350,6 +446,8 @@ class AreaScannerMainWindow(QMainWindow):
         self.action_refresh_ports.triggered.connect(self.refresh_ports)
         self.action_clear.triggered.connect(self.viewer.clear) # 連接按鈕到清除功能
         self.check_show_traj.toggled.connect(self._apply_viewer_config)
+        self.btn_browse_replay.clicked.connect(self.browse_replay_file)
+        self.btn_start_replay.clicked.connect(self.start_playback)
         
         # 數值連動
         self.btn_browse_cfg.clicked.connect(self.browse_cfg)
@@ -440,12 +538,48 @@ class AreaScannerMainWindow(QMainWindow):
         self.action_start.setEnabled(False)
         self.action_stop.setEnabled(True)
         self.status_label.setText("運行中")
+    def browse_replay_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self,"選擇重播檔案","logs","Replay Files (*.bin *.csv)")
+        if path:
+            self.edit_replay_file.setText(path)
+
+    def start_playback(self) -> None:
+        if self.worker and self.worker.isRunning():
+            QMessageBox.warning(self, "警告","請先停止即時錄製")
+            return
+        filepath = self.edit_replay_file.text().strip()
+        if not filepath:
+            QMessageBox.warning(self,"錯誤","請選擇要開啟的")
+            return
+        
+        self.playback_worker = PlaybackWorker(filepath, self)
+        self.playback_worker.log_signal.connect(self.append_log)
+        self.playback_worker.status_signal.connect(self.update_status)
+        self.playback_worker.frame_signal.connect(self.on_new_frame)
+        self.playback_worker.error_signal.connect(self.on_worker_error)
+        self.playback_worker.finished_signal.connect(self.on_worker_finished)
+
+        self.viewer.clear()
+        self.playback_worker.start()
+
+        self.action_start.setEnabled(False)
+        self.action_stop.setEnabled(True)
+        self.btn_start_replay.setEnabled(False)
+
+        
 
     def stop_worker(self) -> None:
-        if self.worker:
+        if self.worker and self.worker.isRunning():
             self.worker.stop()
             self.worker.wait(2000)
+            self.worker = None
+        
+        if hasattr(self, 'playback_worker') and self.playback_worker and self.playback_worker.isRunning():
+            self.playback_worker.stop()
+            self.playback_worker.wait(2000)
+            self.playback_worker = None
         self.on_worker_finished()
+        self.btn_start_replay.setEnabled(True)
 
     def on_new_frame(self, frame: ParsedFrame) -> None:
         self.viewer.update_from_frame(frame)
