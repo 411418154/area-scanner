@@ -545,7 +545,7 @@ class AreaScannerMainWindow(QMainWindow):
 
     def start_playback(self) -> None:
         if self.worker and self.worker.isRunning():
-            QMessageBox.warning(self, "警告","請先停止即時錄製")
+            QMessageBox.warning(self, "警告","請先停止即時連線")
             return
         filepath = self.edit_replay_file.text().strip()
         if not filepath:
@@ -592,6 +592,9 @@ class AreaScannerMainWindow(QMainWindow):
     def on_worker_finished(self) -> None:
         self.action_start.setEnabled(True)
         self.action_stop.setEnabled(False)
+        if hasattr(self, 'btn_start_replay'):
+            self.btn_start_replay.setEnabled(True)
+    
         self.status_label.setText("已停止")
 
     def append_log(self, text: str) -> None:
