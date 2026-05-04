@@ -243,3 +243,9 @@ python AreaScanner_Target_Diagnose_fixed.py
 <p align="center">
   <b>TI Area Scanner Python GUI</b><br>
 </p>
+
+python -m pip install --upgrade pip
+
+python -m pip install PySide6 pyqtgraph PyOpenGL numpy pyserial
+
+python main.py
