@@ -1,0 +1,19 @@
+# 忽略 Python 編譯快取檔
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+# 忽略虛擬環境
+venv/
+.venv/
+env/
+
+# 忽略 Python 編譯後的快取檔
+__pycache__/
+*.pyc
+
+# 忽略 macOS 系統產生的檔案
+.DS_Store
+
+＃忽略 logs 資料夾
+logs/
